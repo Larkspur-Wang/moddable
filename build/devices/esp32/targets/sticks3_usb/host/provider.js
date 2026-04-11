@@ -35,6 +35,11 @@ const device = {
 			data: 47,
 			clock: 48
 		},
+		internal: {
+			io: I2C,
+			data: 47,
+			clock: 48
+		},
 		grove: {
 			io: I2C,
 			data: 9,
@@ -55,6 +60,12 @@ const device = {
 			port: 1,
 			clock: 40,
 			out: 39
+		},
+		display: {
+			io: SPI,
+			port: 1,
+			clock: 40,
+			out: 39
 		}
 	},
 	Analog: {
@@ -66,8 +77,17 @@ const device = {
 	io: { Analog, Digital, DigitalBank, I2C, PWM, Serial, SMBus, SPI },
 	pin: {
 		button: 11,
+		buttonA: 11,
 		buttonB: 12,
-		backlight: 38
+		backlight: 38,
+		displayReset: 21,
+		infraredTX: 46,
+		infraredRX: 42,
+		audioMCLK: 18,
+		audioBCLK: 17,
+		audioWS: 15,
+		audioDataOut: 14,
+		audioDataIn: 16
 	}
 };
 
