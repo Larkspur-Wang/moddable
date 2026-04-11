@@ -547,6 +547,19 @@ void audioInLoop(void *pvParameter)
 			}
 		}
 	};
+#ifdef MODDEF_AUDIOIN_I2S_MCLK_MULTIPLE
+	rx_std_cfg.clk_cfg.mclk_multiple = MODDEF_AUDIOIN_I2S_MCLK_MULTIPLE;
+#endif
+#if !SOC_I2S_HW_VERSION_1
+#ifdef MODDEF_AUDIOIN_I2S_LEFT_ALIGN
+	rx_std_cfg.slot_cfg.left_align = MODDEF_AUDIOIN_I2S_LEFT_ALIGN;
+#endif
+	rx_std_cfg.slot_cfg.big_endian = false;
+	rx_std_cfg.slot_cfg.bit_order_lsb = false;
+#endif
+#ifdef MODDEF_AUDIOIN_I2S_BIT_SHIFT
+	rx_std_cfg.slot_cfg.bit_shift = MODDEF_AUDIOIN_I2S_BIT_SHIFT;
+#endif
 	rx_std_cfg.slot_cfg.slot_mask = (2 == MODDEF_AUDIOIN_NUMCHANNELS)
 		? I2S_STD_SLOT_BOTH
 		: MODDEF_AUDIOIN_I2S_SLOT; 		//@@

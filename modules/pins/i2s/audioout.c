@@ -81,6 +81,15 @@
 	#ifndef MODDEF_AUDIOOUT_I2S_SLOT
  		#define MODDEF_AUDIOOUT_I2S_SLOT I2S_STD_SLOT_RIGHT
 	#endif
+	#ifndef MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE
+		#define MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE I2S_MCLK_MULTIPLE_128
+	#endif
+	#ifndef MODDEF_AUDIOOUT_I2S_LEFT_ALIGN
+		#define MODDEF_AUDIOOUT_I2S_LEFT_ALIGN (1)
+	#endif
+	#ifndef MODDEF_AUDIOOUT_I2S_BIT_SHIFT
+		#define MODDEF_AUDIOOUT_I2S_BIT_SHIFT (1)
+	#endif
 #endif
 
 #if PICO_BUILD
@@ -1508,7 +1517,7 @@ void audioOutLoop(void *pvParameter)
 
 	i2s_std_config_t i2s_config = {
 		.gpio_cfg = {
-			.mclk = I2S_GPIO_UNUSED,
+			.mclk = MODDEF_AUDIOOUT_I2S_MCK_PIN,
 			.bclk = MODDEF_AUDIOOUT_I2S_BCK_PIN,
 			.ws = MODDEF_AUDIOOUT_I2S_LR_PIN,
 			.dout = MODDEF_AUDIOOUT_I2S_DATAOUT_PIN,
@@ -1524,7 +1533,7 @@ void audioOutLoop(void *pvParameter)
 	// I2S_STD_CLK_DEFAULT_CONFIG(sampleRate) (i2s_std.h)
 	i2s_config.clk_cfg.sample_rate_hz = out->sampleRate;
 	i2s_config.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
-	i2s_config.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+	i2s_config.clk_cfg.mclk_multiple = MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE;
 
 	// I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bitwidth, mode) (i2s_std.h)
 	int msb_right = true;
@@ -1543,7 +1552,7 @@ void audioOutLoop(void *pvParameter)
 #if SOC_I2S_HW_VERSION_1    // For esp32/esp32-s2
 	i2s_config.slot_cfg.msb_right = msb_right;
 #else
-	i2s_config.slot_cfg.left_align = false;
+	i2s_config.slot_cfg.left_align = MODDEF_AUDIOOUT_I2S_LEFT_ALIGN;
 	i2s_config.slot_cfg.big_endian = false;
 	i2s_config.slot_cfg.bit_order_lsb = false;
 #endif
@@ -1556,7 +1565,7 @@ void audioOutLoop(void *pvParameter)
 	i2s_config.slot_cfg.slot_mask = MODDEF_AUDIOOUT_I2S_SLOT;;
 #endif
 	i2s_config.slot_cfg.ws_pol = false;
-	i2s_config.slot_cfg.bit_shift = false;
+	i2s_config.slot_cfg.bit_shift = MODDEF_AUDIOOUT_I2S_BIT_SHIFT;
 
 	i2s_channel_init_std_mode(out->tx_handle, &i2s_config);
 	i2s_channel_reconfig_std_slot(out->tx_handle, &i2s_config.slot_cfg);

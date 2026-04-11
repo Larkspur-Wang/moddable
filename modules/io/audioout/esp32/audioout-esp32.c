@@ -35,6 +35,21 @@
 #ifndef MODDEF_AUDIOOUT_I2S_SLOT
 	#define MODDEF_AUDIOOUT_I2S_SLOT I2S_STD_SLOT_RIGHT
 #endif
+#ifndef MODDEF_AUDIOOUT_I2S_NUM
+	#define MODDEF_AUDIOOUT_I2S_NUM (0)
+#endif
+#ifndef MODDEF_AUDIOOUT_I2S_MCK_PIN
+	#define MODDEF_AUDIOOUT_I2S_MCK_PIN I2S_GPIO_UNUSED
+#endif
+#ifndef MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE
+	#define MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE I2S_MCLK_MULTIPLE_128
+#endif
+#ifndef MODDEF_AUDIOOUT_I2S_LEFT_ALIGN
+	#define MODDEF_AUDIOOUT_I2S_LEFT_ALIGN (1)
+#endif
+#ifndef MODDEF_AUDIOOUT_I2S_BIT_SHIFT
+	#define MODDEF_AUDIOOUT_I2S_BIT_SHIFT (1)
+#endif
 
 #include "xsHost.h"
 
@@ -74,6 +89,9 @@ struct AudioOutRecord {
 	uint16_t			sampleRate;
 	uint8_t				numChannels;
 	uint8_t				bitsPerSample;
+	uint8_t				sourceBytesPerFrame;
+	uint8_t				i2sBytesPerFrame;
+	uint8_t				frameExpand;
 
 	i2s_chan_handle_t	tx_handle;
 
@@ -209,6 +227,13 @@ void xs_audioout_constructor_(xsMachine *the)
 	audioOut->sampleRate = (uint16_t)sampleRate;
 	audioOut->numChannels = (uint8_t)numChannels;
 	audioOut->bitsPerSample = (uint8_t)bitsPerSample;
+	audioOut->sourceBytesPerFrame = (bitsPerSample * numChannels) >> 3;
+	audioOut->i2sBytesPerFrame = (MODDEF_AUDIOOUT_I2S_BITSPERSAMPLE * numChannels) >> 3;
+	if (0 == audioOut->i2sBytesPerFrame)
+		audioOut->i2sBytesPerFrame = audioOut->sourceBytesPerFrame;
+	audioOut->frameExpand = 1;
+	if (audioOut->sourceBytesPerFrame && (audioOut->i2sBytesPerFrame >= audioOut->sourceBytesPerFrame))
+		audioOut->frameExpand = audioOut->i2sBytesPerFrame / audioOut->sourceBytesPerFrame;
 
 	audioOut->onWritable = onWritable;
 	
@@ -218,7 +243,7 @@ void xs_audioout_constructor_(xsMachine *the)
 	xsSetHostHooks(xsThis, (xsHostHooks *)&xsAudioOutHooks);
 	xsRemember(audioOut->obj);
 
-    i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MODDEF_AUDIOOUT_I2S_NUM, I2S_ROLE_MASTER);
     tx_chan_cfg.auto_clear = true;
 
 	// number of DMA buffers and their size in samples (default is 6 and 240)
@@ -227,7 +252,9 @@ void xs_audioout_constructor_(xsMachine *the)
 #endif
 
 	tx_chan_cfg.dma_desc_num = 6;
-	tx_chan_cfg.dma_frame_num = I2S_DMA_BUFFER_MAX_SIZE / 2;
+	tx_chan_cfg.dma_frame_num = I2S_DMA_BUFFER_MAX_SIZE / audioOut->i2sBytesPerFrame;
+	if (0 == tx_chan_cfg.dma_frame_num)
+		tx_chan_cfg.dma_frame_num = 1;
 
 #ifdef MODDEF_AUDIOOUT_I2S_PDM_PIN
 	if (gPDMAudioOutBusy)
@@ -250,7 +277,7 @@ void xs_audioout_constructor_(xsMachine *the)
 #elif MODDEF_AUDIOOUT_I2S_BCK_PIN
 	i2s_std_config_t i2s_config = {
 		.gpio_cfg = {
-			.mclk = I2S_GPIO_UNUSED,
+			.mclk = MODDEF_AUDIOOUT_I2S_MCK_PIN,
 			.bclk = MODDEF_AUDIOOUT_I2S_BCK_PIN,
 			.ws = MODDEF_AUDIOOUT_I2S_LR_PIN,
 			.dout = MODDEF_AUDIOOUT_I2S_DATAOUT_PIN,
@@ -266,7 +293,7 @@ void xs_audioout_constructor_(xsMachine *the)
 	// I2S_STD_CLK_DEFAULT_CONFIG(sampleRate)  (i2s_std.h)
 	i2s_config.clk_cfg.sample_rate_hz = audioOut->sampleRate;
 	i2s_config.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
-	i2s_config.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+	i2s_config.clk_cfg.mclk_multiple = MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE;
 
 	// I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bitwidth, mode) (i2s_std.h)
 	int msb_right = true;
@@ -285,20 +312,20 @@ void xs_audioout_constructor_(xsMachine *the)
 #if SOC_I2S_HW_VERSION_1	// esp32/s2
 	i2s_config.slot_cfg.msb_right = msb_right;
 #else
-	i2s_config.slot_cfg.left_align = false;
+	i2s_config.slot_cfg.left_align = MODDEF_AUDIOOUT_I2S_LEFT_ALIGN;
 	i2s_config.slot_cfg.big_endian = false;
 	i2s_config.slot_cfg.bit_order_lsb = false;
 #endif
 
 #if MODDEF_AUDIOOUT_NUMCHANNELS == 2
 	i2s_config.slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
-	i2s_config.slot_cfg.slot_mask = I2S_SLOT_MODE_BOTH;
+	i2s_config.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
 #else
 	i2s_config.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO;
 	i2s_config.slot_cfg.slot_mask = MODDEF_AUDIOOUT_I2S_SLOT;
 #endif
 	i2s_config.slot_cfg.ws_pol = false;
-	i2s_config.slot_cfg.bit_shift = false;
+	i2s_config.slot_cfg.bit_shift = MODDEF_AUDIOOUT_I2S_BIT_SHIFT;
 
 
 #elif MODDEF_AUDIOOUT_I2S_DAC
@@ -316,9 +343,22 @@ void xs_audioout_constructor_(xsMachine *the)
 		xsUnknownError("init PDM failed");
 	gPDMAudioOutBusy = 1;
 #elif MODDEF_AUDIOOUT_I2S_BCK_PIN
+	xsLog("audioout: init std port=%d rate=%d bits=%d channels=%d slot=%d expand=%d\n", MODDEF_AUDIOOUT_I2S_NUM, audioOut->sampleRate, audioOut->bitsPerSample, audioOut->numChannels, MODDEF_AUDIOOUT_I2S_SLOT, audioOut->frameExpand);
 	err = i2s_channel_init_std_mode(audioOut->tx_handle, &i2s_config);
-	i2s_channel_reconfig_std_slot(audioOut->tx_handle, &i2s_config.slot_cfg);
-	i2s_channel_reconfig_std_clock(audioOut->tx_handle, &i2s_config.clk_cfg);
+	if (ESP_OK != err) {
+		xsLog("audioout: init std failed %d\n", (int)err);
+		xsUnknownError("init std failed");
+	}
+	err = i2s_channel_reconfig_std_slot(audioOut->tx_handle, &i2s_config.slot_cfg);
+	if (ESP_OK != err) {
+		xsLog("audioout: reconfig slot failed %d\n", (int)err);
+		xsUnknownError("reconfig slot failed");
+	}
+	err = i2s_channel_reconfig_std_clock(audioOut->tx_handle, &i2s_config.clk_cfg);
+	if (ESP_OK != err) {
+		xsLog("audioout: reconfig clock failed %d\n", (int)err);
+		xsUnknownError("reconfig clock failed");
+	}
 
 #elif MODDEF_AUDIOOUT_I2S_DAC
 #else
@@ -332,9 +372,9 @@ void xs_audioout_constructor_(xsMachine *the)
 	};
 	i2s_channel_register_event_callback(audioOut->tx_handle, &cbs, audioOut);
 
-	audioOut->dma_buf_size = tx_chan_cfg.dma_frame_num * 2;			//@@ wrong for stereo etc
+	audioOut->dma_buf_size = tx_chan_cfg.dma_frame_num * audioOut->sourceBytesPerFrame;
 	audioOut->total_dma_buf_size = audioOut->dma_buf_size * tx_chan_cfg.dma_desc_num;
-	audioOut->bytesWritable -= audioOut->total_dma_buf_size >> 2; 
+	audioOut->bytesWritable = audioOut->total_dma_buf_size;
 
 #if ESP32 && defined(MODDEF_AUDIOOUT_AMPLIFIER_POWER)
 	modGPIOInit(&audioOut->amplifierPower, C_NULL, MODDEF_AUDIOOUT_AMPLIFIER_POWER, kModGPIOOutput);
@@ -378,6 +418,7 @@ void xs_audioout_start_(xsMachine *the)
 	err = i2s_channel_enable(audioOut->tx_handle);
 	if (ESP_OK != err)
 		xsUnknownError("can't enable");
+	xsLog("audioout: enabled\n");
 
 	audioOut->started = true;
 	
@@ -534,7 +575,10 @@ static bool playedBuffer(i2s_chan_handle_t handle, i2s_event_data_t *event, void
 	BaseType_t higherPriorityTaskWoken = pdFALSE;
 
 //@@ entire operation on audioOut->bytesWritable should be atomic
-	uint32_t bytesWritable = __atomic_add_fetch(&audioOut->bytesWritable, event->size, __ATOMIC_SEQ_CST);
+	uint32_t returned = event->size;
+	if (audioOut->frameExpand > 1)
+		returned /= audioOut->frameExpand;
+	uint32_t bytesWritable = __atomic_add_fetch(&audioOut->bytesWritable, returned, __ATOMIC_SEQ_CST);
 	if (bytesWritable > audioOut->total_dma_buf_size)
 		audioOut->bytesWritable = audioOut->total_dma_buf_size;
 
@@ -666,39 +710,73 @@ done:
 
 esp_err_t doWrite(AudioOut audioOut, void *buffer, xsUnsignedValue requested)
 {
-	esp_err_t err;
+	esp_err_t err = ESP_OK;
 	size_t bytes_written = 0;
+	xsUnsignedValue consumed = 0;
 
 	const int kTimeout = 200;	//@@ why does this need to be so big? 0 would be nice.... maybe this is just the first write?
-	if (256 == audioOut->volumeFixed) {
-		if (audioOut->started)
-			err = i2s_channel_write(audioOut->tx_handle, (const char *)buffer, requested, &bytes_written, kTimeout);
-		else
-			err = i2s_channel_preload_data(audioOut->tx_handle, (const char *)buffer, requested, &bytes_written);
-		__atomic_fetch_sub(&audioOut->bytesWritable, bytes_written, __ATOMIC_SEQ_CST);
-	}
-	else {
+	if ((audioOut->frameExpand > 1) && (16 == audioOut->bitsPerSample)) {
 		int16_t *src = (int16_t *)buffer;
 		int16_t volumeFixed = audioOut->volumeFixed;
-		int requestedSamples = requested >> 1;		//@@ broken for stereo & 8 bit
+		int requestedSamples = requested >> 1;
 		while (requestedSamples) {
 			const int samplesLength = 256;
-			int16_t samples[samplesLength];
-			int use = (samplesLength > requestedSamples) ? requestedSamples : samplesLength, i;
-			for (i = 0; i < use; i++)
-				samples[i] = (*src++ * volumeFixed) >> 8;
+			int32_t samples[samplesLength];
+			int use = (samplesLength > requestedSamples) ? requestedSamples : samplesLength;
+			int i;
+			for (i = 0; i < use; i++) {
+				int32_t sample = *src++;
+				if (256 != volumeFixed)
+					sample = (sample * volumeFixed) >> 8;
+				samples[i] = sample << 16;
+			}
 
 			bytes_written = 0;
 			if (audioOut->started)
-				err = i2s_channel_write(audioOut->tx_handle, (const char *)samples, use * 2, &bytes_written, kTimeout);
+				err = i2s_channel_write(audioOut->tx_handle, (const char *)samples, use * sizeof(int32_t), &bytes_written, kTimeout);
 			else
-				err = i2s_channel_preload_data(audioOut->tx_handle, (const char *)samples, use * 2, &bytes_written);
-			if (err) break;
+				err = i2s_channel_preload_data(audioOut->tx_handle, (const char *)samples, use * sizeof(int32_t), &bytes_written);
+			if (err)
+				break;
 
-			__atomic_fetch_sub(&audioOut->bytesWritable, bytes_written, __ATOMIC_SEQ_CST);
+			consumed += bytes_written / audioOut->frameExpand;
 			requestedSamples -= use;
 		}
 	}
+	else {
+		if (256 == audioOut->volumeFixed) {
+			if (audioOut->started)
+				err = i2s_channel_write(audioOut->tx_handle, (const char *)buffer, requested, &bytes_written, kTimeout);
+			else
+				err = i2s_channel_preload_data(audioOut->tx_handle, (const char *)buffer, requested, &bytes_written);
+			consumed = bytes_written;
+		}
+		else {
+			int16_t *src = (int16_t *)buffer;
+			int16_t volumeFixed = audioOut->volumeFixed;
+			int requestedSamples = requested >> 1;		//@@ broken for stereo & 8 bit
+			while (requestedSamples) {
+				const int samplesLength = 256;
+				int16_t samples[samplesLength];
+				int use = (samplesLength > requestedSamples) ? requestedSamples : samplesLength, i;
+				for (i = 0; i < use; i++)
+					samples[i] = (*src++ * volumeFixed) >> 8;
+
+				bytes_written = 0;
+				if (audioOut->started)
+					err = i2s_channel_write(audioOut->tx_handle, (const char *)samples, use * 2, &bytes_written, kTimeout);
+				else
+					err = i2s_channel_preload_data(audioOut->tx_handle, (const char *)samples, use * 2, &bytes_written);
+				if (err)
+					break;
+
+				consumed += bytes_written;
+				requestedSamples -= use;
+			}
+		}
+	}
+
+	__atomic_fetch_sub(&audioOut->bytesWritable, consumed, __ATOMIC_SEQ_CST);
 
 	return err;
 }

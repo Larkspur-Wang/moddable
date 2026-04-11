@@ -617,9 +617,8 @@ char* fxCStackLimit()
 		extern cont_t g_cont;
 		return 192 + (char *)g_cont.stack;
 	#elif defined(__ets__) && ESP32 && !defined(__ZEPHYR__)
-		TaskStatus_t info;
-		vTaskGetInfo(NULL, &info, pdFALSE, eReady);
-		return 512 + (char *)info.pxStackBase;
+		extern uint8_t * pxTaskGetStackStart(TaskHandle_t xTask);
+		return 512 + (char *)pxTaskGetStackStart(NULL);
 	#else
 		return C_NULL;
 	#endif
