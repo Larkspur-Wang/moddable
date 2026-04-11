@@ -200,11 +200,9 @@ extern int dvi_adpcm_decode(void *in_buf, int in_size, void *out_buf);
 #define kSBCSamplesPerChunk (128)
 #define kToneSamplesPerChunk (128)
 
-// kDecompressBufferSize based on maximum of generated buffer sizes
-// 		kIMASamplesPerChunk * sizeof(int16_t)
-// 		kSBCSamplesPerChunk * sizeof(int16_t)
-// 		kToneSamplesPerChunk * sizeof(int16_t));
-#define kDecompressBufferSize (129 * 2)
+// kDecompressBufferSize based on maximum of generated buffer sizes.
+// Tone and silence chunks may need two channels of 16-bit samples.
+#define kDecompressBufferSize (kToneSamplesPerChunk * 2 * sizeof(int16_t))
 
 typedef struct {
 	void		*samples;
@@ -234,7 +232,8 @@ typedef struct {
 
 typedef struct {
 	uint16_t		volume;				// 8.8 fixed
-	uint16_t		reserved;
+	uint8_t			numChannels;
+	uint8_t			reserved;
 	int16_t			*decompressed;
 	void			*decompressor;		//@@ merge into decompressed block
 	int				elementCount;
@@ -511,8 +510,10 @@ void xs_audioout(xsMachine *the)
 	out->bytesPerFrame = (bitsPerSample * numChannels) >> 3;
 	out->streamCount = streamCount;
 
-	for (i = 0; i < streamCount; i++)
+	for (i = 0; i < streamCount; i++) {
 		out->stream[i].volume = 256 / MODDEF_AUDIOOUT_VOLUME_DIVIDER;
+		out->stream[i].numChannels = numChannels;
+	}
 
 #if defined(__APPLE__)
 	out->runLoop = CFRunLoopGetCurrent();
@@ -2202,7 +2203,8 @@ int streamDecompressNext(modAudioOutStream stream)
 		element->compressed.data += bytesUsed;
 	}
 	else if (kSampleFormatTone == element->sampleFormat) {
-		int16_t *out = stream->decompressed;
+		int16_t *decompressed = stream->decompressed;
+		uint8_t numChannels = stream->numChannels;
 		uint8_t remain;
 		OUTPUTSAMPLETYPE value;
 		int position, max;
@@ -2225,7 +2227,9 @@ int streamDecompressNext(modAudioOutStream stream)
 		max = element->tone.max;
 		element->sampleCount = remain; 
 		while (remain--) {
-			*out++ = value;
+			uint8_t channel = numChannels;
+			while (channel--)
+				*decompressed++ = value;
 			position += 0x10000;
 			if (position >= max) {
 				value = -value;
@@ -2244,7 +2248,7 @@ int streamDecompressNext(modAudioOutStream stream)
 		element->silence.remaining -= use;
 		element->sampleCount = use;
 
-		c_memset(stream->decompressed, 0, use * 2); 
+		c_memset(stream->decompressed, 0, use * sizeof(int16_t) * stream->numChannels);
 	}
 
 	element->position = 0;
