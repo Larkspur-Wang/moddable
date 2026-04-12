@@ -61,12 +61,7 @@ class M5PM1 extends SMBus {
 	}
 
 	setExt5VEnabled(enabled) {
-		const mask = 1 << 0;
-		this.#bitOff(0x16, mask);
-		if (enabled)
-			this.#bitOn(0x10, mask);
-		else
-			this.#bitOff(0x10, mask);
+		this.#configureGPIO(0, true, !!enabled);
 	}
 
 	readDeviceId() {

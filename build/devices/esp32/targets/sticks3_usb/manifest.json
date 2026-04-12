@@ -3,8 +3,9 @@
 		"ESP32_SUBCLASS": "esp32s3",
 		"USE_USB": "1",
 		"SDKCONFIGPATH": "./sdkconfig",
-		"PROGRAMMING_MODE_MESSAGE": "INSTRUCTIONS: Hold the BOOT button and press then release the RESET button.",
-		"BEFORE_DEBUGGING_MESSAGE": "Press and release the RESET button."
+		"PARTITIONS_FILE_FOR_TARGET": "./sdkconfig/partitions.csv",
+		"PROGRAMMING_MODE_MESSAGE": "INSTRUCTIONS: Hold the side power button until the board enters USB download mode.",
+		"BEFORE_DEBUGGING_MESSAGE": "Press the side power button once if the board needs to wake or restart."
 	},
 	"include": [
 		"$(MODDABLE)/modules/io/manifest.json",

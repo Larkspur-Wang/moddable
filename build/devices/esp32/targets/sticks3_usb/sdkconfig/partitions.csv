@@ -1,0 +1,12 @@
+#
+# StickS3 OTA-friendly partition layout for Moddable.
+# 8 MB flash = two large OTA app slots + Moddable data partitions.
+#
+# Name,    Type, SubType, Offset,   Size, Flags
+nvs,       data, nvs,     0x009000, 0x004000,
+otadata,   data, ota,     0x00D000, 0x002000,
+phy_init,  data, phy,     0x00F000, 0x001000,
+ota_0,     app,  ota_0,   0x010000, 0x3F0000,
+ota_1,     app,  ota_1,   ,         0x3F0000,
+xs,        0x40, 1,       ,         0x008000,
+settings,  data, 1,       ,         0x008000,

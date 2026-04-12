@@ -30,6 +30,13 @@
 #include "esp_adc/adc_continuous.h"
 #include "soc/soc_caps.h"
 
+#include <limits.h>
+#include <math.h>
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+	#include "hal/i2s_ll.h"
+#endif
+
 #include "builtinCommon.h"
 
 #ifndef MODDEF_AUDIOIN_I2S_NUM
@@ -135,6 +142,110 @@ typedef struct AudioInputRecord *AudioInput;
 static void xs_audioin_mark(xsMachine* the, void* it, xsMarkRoot markRoot);
 static void audioInLoop(void *pvParameter);
 static void deliverCallbacks(void *the, void *refcon, uint8_t *message, uint16_t messageLength);
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && (MODDEF_AUDIOIN_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+	static void modAudioCalcClockDiv(uint32_t *div_a, uint32_t *div_b, uint32_t *div_n, uint32_t baseClock, uint32_t targetFreq)
+	{
+		if (baseClock <= (targetFreq << 1)) {
+			*div_n = 2;
+			*div_a = 1;
+			*div_b = 0;
+			return;
+		}
+
+		uint32_t save_n = 255;
+		uint32_t save_a = 63;
+		uint32_t save_b = 62;
+
+		if (targetFreq) {
+			float fdiv = (float)baseClock / (float)targetFreq;
+			uint32_t n = (uint32_t)fdiv;
+			if (n < 256) {
+				fdiv -= n;
+
+				float check_base = (float)baseClock;
+				while ((int32_t)targetFreq >= 0) {
+					targetFreq <<= 1;
+					check_base *= 2.0f;
+				}
+				float check_target = (float)targetFreq;
+
+				uint32_t save_diff = UINT_MAX;
+				if (n < 255) {
+					save_a = 1;
+					save_b = 0;
+					save_n = n + 1;
+					save_diff = abs((int)(check_target - (check_base / (float)save_n)));
+				}
+
+				for (uint32_t a = 1; a < 64; a++) {
+					uint32_t b = (uint32_t)roundf(a * fdiv);
+					if (a <= b)
+						continue;
+
+					uint32_t diff = abs((int)(check_target - ((check_base * a) / (float)((n * a) + b))));
+					if (save_diff <= diff)
+						continue;
+
+					save_diff = diff;
+					save_a = a;
+					save_b = b;
+					save_n = n;
+					if (!diff)
+						break;
+				}
+			}
+		}
+
+		*div_n = save_n;
+		*div_a = save_a;
+		*div_b = save_b;
+	}
+
+	static void modAudioInApplyRawClockDiv(uint32_t sampleRate)
+	{
+		static const uint32_t kPLLDivClock = 120 * 1000 * 1000;
+		const uint32_t bits = 16;
+		const uint32_t div_m = 8;
+		uint32_t div_a, div_b, div_n;
+		i2s_dev_t *dev = (0 == MODDEF_AUDIOIN_I2S_NUM) ? &I2S0 : &I2S1;
+
+		modAudioCalcClockDiv(&div_a, &div_b, &div_n, kPLLDivClock / (bits * div_m), sampleRate);
+
+		dev->rx_conf1.rx_bck_div_num = div_m - 1;
+
+		bool yn1 = (div_b > (div_a >> 1));
+		if (yn1)
+			div_b = div_a - div_b;
+
+		int div_y = 1;
+		int div_x = 0;
+		if (div_b) {
+			div_x = (div_a / div_b) - 1;
+			div_y = div_a % div_b;
+
+			if (0 == div_y) {
+				div_y = 1;
+				div_b = 511;
+			}
+		}
+
+		i2s_ll_rx_set_raw_clk_div(dev, div_n, div_x, div_y, div_b, yn1);
+#if defined(I2S_RX_CLKM_DIV_X)
+		dev->rx_clkm_div_conf.rx_clkm_div_x = div_x;
+		dev->rx_clkm_div_conf.rx_clkm_div_y = div_y;
+		dev->rx_clkm_div_conf.rx_clkm_div_z = div_b;
+		dev->rx_clkm_div_conf.rx_clkm_div_yn1 = yn1;
+		dev->rx_clkm_conf.rx_clkm_div_num = div_n;
+		dev->rx_clkm_conf.rx_clk_sel = 1;
+		dev->tx_clkm_conf.clk_en = 1;
+		dev->rx_clkm_conf.rx_clk_active = 1;
+
+		dev->rx_conf.rx_update = 1;
+		dev->rx_conf.rx_update = 0;
+#endif
+	}
+#endif
 
 /*
 static void blockDump(uint8_t *block, uint32_t amt)
@@ -564,11 +675,15 @@ void audioInLoop(void *pvParameter)
 		? I2S_STD_SLOT_BOTH
 		: MODDEF_AUDIOIN_I2S_SLOT; 		//@@
 
-	err = i2s_channel_init_std_mode(input->handle, &rx_std_cfg);
-	if (err) {
-		i2s_del_channel(input->handle);
-		modLog("i2s_channel_init failed");
-	}
+		err = i2s_channel_init_std_mode(input->handle, &rx_std_cfg);
+		if (err) {
+			i2s_del_channel(input->handle);
+			modLog("i2s_channel_init failed");
+		}
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && (MODDEF_AUDIOIN_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+		else
+			modAudioInApplyRawClockDiv(input->sampleRate);
+#endif
 #endif
 
 	err = i2s_channel_enable(input->handle);

@@ -318,7 +318,17 @@ void fxRestartSerial(txSerialTool self)
 {
 	int fd = CFSocketGetNative(self->serialSocket), flags;
 	ioctl(fd, TIOCMGET, &flags);
+	flags &= ~TIOCM_RTS;
+	flags |= TIOCM_DTR;
+	ioctl(fd, TIOCMSET, &flags);
+
+	usleep(5000);
+
 	flags |= TIOCM_RTS;
+	ioctl(fd, TIOCMSET, &flags);
+
+	usleep(5000);
+
 	flags &= ~TIOCM_DTR;
 	ioctl(fd, TIOCMSET, &flags);
 

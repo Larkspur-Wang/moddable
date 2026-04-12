@@ -44,6 +44,7 @@
 #include "tinyusb.h"
 #include "tinyusb_cdc_acm.h"
 #include "tinyusb_default_config.h"
+#include "esp_system.h"
 
 extern void fx_putc(void *refcon, char c);		//@@
 
@@ -63,6 +64,56 @@ static uint32_t usbEvtPending = 0;
 static fifo_t rx_fifo;
 static uint8_t *rx_fifo_buffer;
 static uint8_t usb_rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE];
+#define USB_TX_PENDING_SIZE 4096
+static uint8_t usb_tx_pending[USB_TX_PENDING_SIZE];
+static uint16_t usb_tx_pending_count = 0;
+
+static void queue_pending_output(const uint8_t *bytes, int count) {
+	if (count <= 0)
+		return;
+
+	if (count >= USB_TX_PENDING_SIZE) {
+		c_memcpy(usb_tx_pending, bytes + count - USB_TX_PENDING_SIZE, USB_TX_PENDING_SIZE);
+		usb_tx_pending_count = USB_TX_PENDING_SIZE;
+		return;
+	}
+
+	if ((usb_tx_pending_count + count) > USB_TX_PENDING_SIZE) {
+		uint16_t keep = USB_TX_PENDING_SIZE - count;
+		c_memmove(usb_tx_pending, usb_tx_pending + usb_tx_pending_count - keep, keep);
+		usb_tx_pending_count = keep;
+	}
+
+	c_memcpy(usb_tx_pending + usb_tx_pending_count, bytes, count);
+	usb_tx_pending_count += count;
+}
+
+static uint8_t write_usb_bytes(const uint8_t *bytes, int count) {
+	while (count > 0) {
+		uint32_t amt = (count > CONFIG_TINYUSB_CDC_RX_BUFSIZE) ? CONFIG_TINYUSB_CDC_RX_BUFSIZE : count;
+		tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, bytes, amt);
+		if (ESP_ERR_TIMEOUT == tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 50)) {
+			queue_pending_output(bytes, count);
+			return 0;
+		}
+		bytes += amt;
+		count -= amt;
+	}
+
+	return 1;
+}
+
+static void flush_pending_output(void) {
+	if (!usb_tx_pending_count)
+		return;
+	if (!tud_cdc_connected())
+		return;
+
+	uint16_t pendingCount = usb_tx_pending_count;
+	usb_tx_pending_count = 0;
+	if (!write_usb_bytes(usb_tx_pending, pendingCount))
+		return;
+}
 
 static uint32_t F_length(fifo_t *fifo) {
 	uint32_t tmp = fifo->read;
@@ -170,29 +221,68 @@ WEAK void modLog_transmit(const char *msg)
 	}
 }
 
-static uint8_t DTR = 1;
-static uint8_t RTS = 1;
+static uint8_t gLineStateDTR = 1;
+static uint8_t gLineStateRTS = 1;
+static uint8_t gLineStateSequence = 3;
+static uint8_t gLineStateInitialized = 0;
+static uint8_t gRestartArmed = 0;
 
-void checkLineState() {
-	uint8_t seq = (DTR ? 1 : 0) + (RTS ? 2 : 0);
-	if (seq == 3) {				// normal run mode
-		;
+static void checkLineState(uint8_t previousSequence, uint8_t sequence) {
+	/*
+		Use an explicit two-step debugger restart pattern so ordinary serial-port
+		opens on Windows do not accidentally reboot the board:
+			1) DTR on, RTS off  -> sequence 1
+			2) DTR on, RTS on   -> sequence 3 (arm restart)
+			3) DTR off, RTS on  -> sequence 2 (restart)
+	*/
+	if ((previousSequence == 1) && (sequence == 3)) {
+		gRestartArmed = 1;
+		return;
 	}
-	else if (seq == 2) {		// DTR dropped, RTS asserted
+
+	if (gRestartArmed && (previousSequence == 3) && (sequence == 2)) {
+		gRestartArmed = 0;
 		esp_restart();
+		return;
 	}
-	else if (seq == 1) {		// DTR raised, RTS off - programming mode
-		;	// can't get here (we just reset)
-	}
-	else {
-	}
+
+	if (sequence != 3)
+		gRestartArmed = 0;
 }
 
 void line_state_callback(int itf, cdcacm_event_t *event) {
-	DTR = event->line_state_changed_data.dtr;
-	RTS = event->line_state_changed_data.rts;
-	// printf("[%ld] dtr: %d, rts: %d\r\n", modMilliseconds(), DTR, RTS);
-	checkLineState();
+	uint8_t dtr = event->line_state_changed_data.dtr;
+	uint8_t rts = event->line_state_changed_data.rts;
+	uint8_t sequence = (dtr ? 1 : 0) + (rts ? 2 : 0);
+	uint8_t previousSequence = gLineStateSequence;
+
+	(void)itf;
+
+	/*
+		Windows usbser often reports an initial transient line state while opening
+		the CDC device. Ignore the very first notification so host auto-open does
+		not reset the board, but preserve later explicit DTR/RTS transitions so
+		serial2xsbug can still request a restart.
+	*/
+	if (!gLineStateInitialized) {
+		gLineStateInitialized = 1;
+		gLineStateDTR = dtr;
+		gLineStateRTS = rts;
+		gLineStateSequence = sequence;
+		gRestartArmed = 0;
+		return;
+	}
+
+	if ((gLineStateDTR == dtr) && (gLineStateRTS == rts))
+		return;
+
+	gLineStateDTR = dtr;
+	gLineStateRTS = rts;
+	gLineStateSequence = sequence;
+	checkLineState(previousSequence, sequence);
+
+	if (tud_cdc_connected())
+		flush_pending_output();
 }
 
 void cdc_rx_callback(int itf, cdcacm_event_t *event) {
@@ -219,17 +309,13 @@ void cdc_rx_callback(int itf, cdcacm_event_t *event) {
 }
 
 void ESP_put(uint8_t *c, int count) {
-	if (!tud_cdc_connected())
+	if (!tud_cdc_connected()) {
+		queue_pending_output(c, count);
 		return;
-	while (count) {
-		uint32_t amt = count > CONFIG_TINYUSB_CDC_RX_BUFSIZE ? CONFIG_TINYUSB_CDC_RX_BUFSIZE : count;
-		tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, c, amt);
-		if (ESP_ERR_TIMEOUT == tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 50)) {
-			// printf("write_flush timeout\n");
-		}
-		c += amt;
-		count -= amt;
 	}
+
+	flush_pending_output();
+	write_usb_bytes(c, count);
 }
 
 void ESP_putc(int c) {
@@ -273,6 +359,7 @@ void setupDebugger(void) {
 	for (count = 0; count < 100; count++) {
 		if (tud_cdc_connected()) {
 			// printf("USB CONNECTED!\r\n");
+			flush_pending_output();
 			break;
 		}
 		modDelayMilliseconds(50);	// give USB time to come up

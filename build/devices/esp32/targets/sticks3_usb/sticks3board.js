@@ -193,16 +193,11 @@ function releaseSpeaker() {
 	trace(`StickS3 board release speaker users=${state.speakerUsers}\n`);
 	if (!state.speakerUsers) {
 		try {
-			state.codec?.stopSpeaker();
+			state.power?.setSpeakerAmplifier(false);
 		}
-		finally {
-			try {
-				state.power?.setSpeakerAmplifier(false);
-			}
-			catch {
-			}
-			state.mode = state.microphoneUsers ? "microphone" : "idle";
+		catch {
 		}
+		state.mode = state.microphoneUsers ? "microphone" : "idle";
 	}
 }
 

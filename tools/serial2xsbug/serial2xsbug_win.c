@@ -274,9 +274,16 @@ DWORD fxReadSerialAux(txSerialTool self)
 
 void fxRestartSerial(txSerialTool self)
 {
+	mxThrowElse(EscapeCommFunction(self->serialConnection, CLRRTS) != 0);
+	mxThrowElse(EscapeCommFunction(self->serialConnection, SETDTR) != 0);
+	Sleep(5);
+
 	mxThrowElse(EscapeCommFunction(self->serialConnection, SETRTS) != 0);
+	Sleep(5);
+
 	mxThrowElse(EscapeCommFunction(self->serialConnection, CLRDTR) != 0);
 	Sleep(5);
+
 	mxThrowElse(EscapeCommFunction(self->serialConnection, CLRRTS) != 0);
 	if (self->dtr)
 		mxThrowElse(EscapeCommFunction(self->serialConnection, SETDTR) != 0);
