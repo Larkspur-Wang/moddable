@@ -270,6 +270,8 @@ void line_state_callback(int itf, cdcacm_event_t *event) {
 		gLineStateRTS = rts;
 		gLineStateSequence = sequence;
 		gRestartArmed = 0;
+		if (tud_cdc_connected())
+			flush_pending_output();
 		return;
 	}
 

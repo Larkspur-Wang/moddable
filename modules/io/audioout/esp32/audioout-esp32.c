@@ -403,7 +403,11 @@ void xs_audioout_constructor_(xsMachine *the)
 
 	// I2S_STD_CLK_DEFAULT_CONFIG(sampleRate)  (i2s_std.h)
 	i2s_config.clk_cfg.sample_rate_hz = audioOut->sampleRate;
+#if defined(I2S_CLK_SRC_PLL_160M) && !defined(CONFIG_IDF_TARGET_ESP32P4)
+	i2s_config.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
+#else
 	i2s_config.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+#endif
 	i2s_config.clk_cfg.mclk_multiple = MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE;
 
 	// I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bitwidth, mode) (i2s_std.h)
@@ -460,9 +464,6 @@ void xs_audioout_constructor_(xsMachine *the)
 		xsLog("audioout: init std failed %d\n", (int)err);
 		xsUnknownError("init std failed");
 	}
-#if defined(CONFIG_IDF_TARGET_ESP32S3) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
-	modAudioOutApplyRawClockDiv(audioOut->sampleRate);
-#endif
 	err = i2s_channel_reconfig_std_slot(audioOut->tx_handle, &i2s_config.slot_cfg);
 	if (ESP_OK != err) {
 		xsLog("audioout: reconfig slot failed %d\n", (int)err);

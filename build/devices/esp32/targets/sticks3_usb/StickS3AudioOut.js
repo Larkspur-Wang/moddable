@@ -4,17 +4,41 @@ import StickS3Board from "sticks3/board";
 export default class StickS3AudioOut extends AudioOut {
 	constructor(options = {}) {
 		const settings = StickS3Board.pinsSpeakerOptions(options);
-		StickS3Board.acquireSpeaker();
+		super(settings);
+		this._stickS3Closed = false;
+		this._stickS3Started = false;
+	}
 
-		let constructed = false;
+	start() {
+		if (this._stickS3Closed)
+			throw new Error("audio out closed");
+
+		if (!this._stickS3Started) {
+			StickS3Board.acquireSpeaker();
+			try {
+				super.start();
+				this._stickS3Started = true;
+			}
+			catch (error) {
+				StickS3Board.releaseSpeaker();
+				throw error;
+			}
+			return;
+		}
+
+		super.start();
+	}
+
+	stop() {
+		if (!this._stickS3Started)
+			return super.stop();
+
 		try {
-			super(settings);
-			constructed = true;
-			this._stickS3Closed = false;
+			super.stop();
 		}
 		finally {
-			if (!constructed)
-				StickS3Board.releaseSpeaker();
+			this._stickS3Started = false;
+			StickS3Board.releaseSpeaker();
 		}
 	}
 
@@ -27,7 +51,10 @@ export default class StickS3AudioOut extends AudioOut {
 			super.close();
 		}
 		finally {
-			StickS3Board.releaseSpeaker();
+			if (this._stickS3Started) {
+				this._stickS3Started = false;
+				StickS3Board.releaseSpeaker();
+			}
 		}
 	}
 }

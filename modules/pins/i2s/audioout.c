@@ -27,6 +27,9 @@
 #include "mc.defines.h"
 #include "sbc_decoder.h"
 
+#include <limits.h>
+#include <math.h>
+
 #ifndef MODDEF_AUDIOOUT_STREAMS
 	#define MODDEF_AUDIOOUT_STREAMS (4)
 #endif
@@ -165,6 +168,9 @@
 #else
 	#error
 #endif
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+	#include "hal/i2s_ll.h"
+#endif
 
 #ifdef MODDEF_AUDIOOUT_AMPLIFIER_POWER
 	#include "modGPIO.h"
@@ -206,6 +212,7 @@ extern int dvi_adpcm_decode(void *in_buf, int in_size, void *out_buf);
 
 typedef struct {
 	void		*samples;
+	xsSlot		*buffer;
 	int			sampleCount;		// 0 means this is a callback or volume command with value of (uintptr_t)samples
 	int			position;			// less than zero if callback, else
 	int16_t		repeat;				// always 1 for callback, negative for infinite
@@ -352,6 +359,111 @@ static void updateActiveStreams(modAudioOut out);
 static void doLock(modAudioOut out);
 static void doUnlock(modAudioOut out);
 
+#if ESP32 && defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+	static void modAudioCalcClockDiv(uint32_t *div_a, uint32_t *div_b, uint32_t *div_n, uint32_t baseClock, uint32_t targetFreq)
+	{
+		if (baseClock <= (targetFreq << 1)) {
+			*div_n = 2;
+			*div_a = 1;
+			*div_b = 0;
+			return;
+		}
+
+		uint32_t save_n = 255;
+		uint32_t save_a = 63;
+		uint32_t save_b = 62;
+
+		if (targetFreq) {
+			float fdiv = (float)baseClock / (float)targetFreq;
+			uint32_t n = (uint32_t)fdiv;
+			if (n < 256) {
+				fdiv -= n;
+
+				float check_base = (float)baseClock;
+				while ((int32_t)targetFreq >= 0) {
+					targetFreq <<= 1;
+					check_base *= 2.0f;
+				}
+				float check_target = (float)targetFreq;
+
+				uint32_t save_diff = UINT_MAX;
+				if (n < 255) {
+					save_a = 1;
+					save_b = 0;
+					save_n = n + 1;
+					save_diff = abs((int)(check_target - (check_base / (float)save_n)));
+				}
+
+				for (uint32_t a = 1; a < 64; a++) {
+					uint32_t b = (uint32_t)roundf(a * fdiv);
+					if (a <= b)
+						continue;
+
+					uint32_t diff = abs((int)(check_target - ((check_base * a) / (float)((n * a) + b))));
+					if (save_diff <= diff)
+						continue;
+
+					save_diff = diff;
+					save_a = a;
+					save_b = b;
+					save_n = n;
+					if (!diff)
+						break;
+				}
+			}
+		}
+
+		*div_n = save_n;
+		*div_a = save_a;
+		*div_b = save_b;
+	}
+
+	static void modAudioOutApplyRawClockDiv(uint32_t sampleRate)
+	{
+		static const uint32_t kPLLDivClock = 120 * 1000 * 1000;
+		const uint32_t bits = 16;
+		const uint32_t div_m = 8;
+		uint32_t div_a, div_b, div_n;
+		i2s_dev_t *dev = (0 == MODDEF_AUDIOOUT_I2S_NUM) ? &I2S0 : &I2S1;
+
+		modAudioCalcClockDiv(&div_a, &div_b, &div_n, kPLLDivClock, div_m * bits * sampleRate);
+
+		dev->tx_conf1.tx_bck_div_num = div_m - 1;
+
+		bool yn1 = (div_b > (div_a >> 1));
+		if (yn1)
+			div_b = div_a - div_b;
+
+		int div_y = 1;
+		int div_x = 0;
+		if (div_b) {
+			div_x = (div_a / div_b) - 1;
+			div_y = div_a % div_b;
+
+			if (0 == div_y) {
+				div_y = 1;
+				div_b = 511;
+			}
+		}
+
+		i2s_ll_tx_set_raw_clk_div(dev, div_n, div_x, div_y, div_b, yn1);
+#if defined(I2S_TX_CLKM_DIV_X)
+		dev->tx_clkm_div_conf.tx_clkm_div_x = div_x;
+		dev->tx_clkm_div_conf.tx_clkm_div_y = div_y;
+		dev->tx_clkm_div_conf.tx_clkm_div_z = div_b;
+		dev->tx_clkm_div_conf.tx_clkm_div_yn1 = yn1;
+		dev->tx_clkm_conf.tx_clkm_div_num = div_n;
+		dev->tx_clkm_conf.tx_clk_sel = 1;
+		dev->tx_clkm_conf.clk_en = 1;
+		dev->tx_clkm_conf.tx_clk_active = 1;
+
+		dev->tx_conf.tx_update = 1;
+		dev->tx_conf.tx_update = 0;
+#endif
+	}
+#endif
+static void xs_audioout_mark(xsMachine *the, void *it, xsMarkRoot markRoot);
+
 static void audioMix(modAudioOut out, int samplesToGenerate, OUTPUTSAMPLETYPE *output);
 static void endOfElement(modAudioOut out, modAudioOutStream stream);
 static void setStreamVolume(modAudioOut out, modAudioOutStream stream, int volume);
@@ -359,7 +471,7 @@ static int streamDecompressNext(modAudioOutStream stream);
 
 static const xsHostHooks ICACHE_RODATA_ATTR xsAudioOutHooks = {
 	xs_audioout_destructor,
-	NULL,
+	xs_audioout_mark,
 	NULL
 };
 
@@ -436,6 +548,25 @@ void xs_audioout_destructor(void *data)
 	}
 
 	c_free(out);
+}
+
+void xs_audioout_mark(xsMachine *the, void *it, xsMarkRoot markRoot)
+{
+	modAudioOut out = it;
+	int streamIndex;
+
+	if (!out)
+		return;
+
+	for (streamIndex = 0; streamIndex < out->streamCount; streamIndex++) {
+		modAudioOutStream stream = &out->stream[streamIndex];
+		int elementIndex;
+		for (elementIndex = 0; elementIndex < stream->elementCount; elementIndex++) {
+			modAudioQueueElement element = &stream->element[elementIndex];
+			if (element->buffer)
+				(*markRoot)(the, element->buffer);
+		}
+	}
 }
 
 void xs_audioout(xsMachine *the)
@@ -857,11 +988,13 @@ void xs_audioout_enqueue(xsMachine *the)
 			doLock(out);
 
 			element = &stream->element[stream->elementCount];
+			element->buffer = C_NULL;
 			element->position = 0;
 			element->repeat = repeat;
 			element->sampleFormat = sampleFormat;
 			if (kSampleFormatUncompressed == sampleFormat) {
 				element->samples = buffer + (sampleOffset * out->bytesPerFrame);
+				element->buffer = xsmcToReference(xsArg(2));
 				element->sampleCount = samplesToUse;
 			}
 			else if (kSampleFormatIMA == sampleFormat) {
@@ -971,6 +1104,7 @@ void xs_audioout_enqueue(xsMachine *the)
 			doLock(out);
 
 			element = &stream->element[stream->elementCount];
+			element->buffer = C_NULL;
 			element->position = 0;
 			element->sampleFormat = sampleFormat;
 			element->samples = stream->decompressed;
@@ -1506,14 +1640,15 @@ void audioOutLoop(void *pvParameter)
 	i2s_channel_init_pdm_tx_mode(out->tx_handle, &tx_cfg);
 
 #elif !MODDEF_AUDIOOUT_I2S_DAC
-	// I2S_CHANNEL_DEFAULT_CONFIG(i2s_num, i2s_role)
-	i2s_chan_config_t chan_cfg = {
-		.id = MODDEF_AUDIOOUT_I2S_NUM,
-		.role = I2S_ROLE_MASTER,
-		.dma_desc_num = 2,
-		.dma_frame_num = sizeof(out->buffer) / out->bytesPerFrame,
-		.auto_clear = true,		// This is different from I2S_CHANNEL_DEFAULT_CONFIG
-	};
+	i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MODDEF_AUDIOOUT_I2S_NUM, I2S_ROLE_MASTER);
+	chan_cfg.auto_clear = true;
+#ifndef I2S_DMA_BUFFER_MAX_SIZE
+	#define I2S_DMA_BUFFER_MAX_SIZE (4092)
+#endif
+	chan_cfg.dma_desc_num = 6;
+	chan_cfg.dma_frame_num = I2S_DMA_BUFFER_MAX_SIZE / out->bytesPerFrame;
+	if (0 == chan_cfg.dma_frame_num)
+		chan_cfg.dma_frame_num = 1;
 	i2s_new_channel(&chan_cfg, &out->tx_handle, NULL);
 
 	i2s_std_config_t i2s_config = {
@@ -1533,7 +1668,11 @@ void audioOutLoop(void *pvParameter)
 
 	// I2S_STD_CLK_DEFAULT_CONFIG(sampleRate) (i2s_std.h)
 	i2s_config.clk_cfg.sample_rate_hz = out->sampleRate;
+#if defined(I2S_CLK_SRC_PLL_160M) && !defined(CONFIG_IDF_TARGET_ESP32P4)
+	i2s_config.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
+#else
 	i2s_config.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+#endif
 	i2s_config.clk_cfg.mclk_multiple = MODDEF_AUDIOOUT_I2S_MCLK_MULTIPLE;
 
 	// I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bitwidth, mode) (i2s_std.h)

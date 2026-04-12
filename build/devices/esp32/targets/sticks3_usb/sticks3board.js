@@ -122,8 +122,12 @@ function pinsSpeakerOptions(options = {}) {
 		result.sampleRate = DEFAULT_SPEAKER_SAMPLE_RATE;
 	if (undefined === result.bitsPerSample)
 		result.bitsPerSample = DEFAULT_BITS_PER_SAMPLE;
-	if ((undefined === result.numChannels) && (undefined === result.channels))
-		result.numChannels = DEFAULT_SPEAKER_CHANNELS;
+	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_SPEAKER_CHANNELS))
+		trace(`StickS3 speaker forcing stereo pins output from ${result.numChannels}\n`);
+	if ((undefined !== result.channels) && (result.channels !== DEFAULT_SPEAKER_CHANNELS))
+		trace(`StickS3 speaker forcing stereo pins output from ${result.channels}\n`);
+	result.numChannels = DEFAULT_SPEAKER_CHANNELS;
+	delete result.channels;
 
 	return result;
 }
@@ -137,8 +141,12 @@ function ioSpeakerOptions(options = {}) {
 		result.sampleRate = DEFAULT_SPEAKER_SAMPLE_RATE;
 	if (undefined === result.bitsPerSample)
 		result.bitsPerSample = DEFAULT_BITS_PER_SAMPLE;
-	if ((undefined === result.channels) && (undefined === result.numChannels))
-		result.channels = DEFAULT_SPEAKER_CHANNELS;
+	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_SPEAKER_CHANNELS))
+		trace(`StickS3 speaker forcing stereo io output from ${result.numChannels}\n`);
+	if ((undefined !== result.channels) && (result.channels !== DEFAULT_SPEAKER_CHANNELS))
+		trace(`StickS3 speaker forcing stereo io output from ${result.channels}\n`);
+	result.channels = DEFAULT_SPEAKER_CHANNELS;
+	delete result.numChannels;
 
 	return result;
 }
@@ -152,8 +160,12 @@ function microphoneOptions(options = {}) {
 		result.sampleRate = DEFAULT_MICROPHONE_SAMPLE_RATE;
 	if (undefined === result.bitsPerSample)
 		result.bitsPerSample = DEFAULT_BITS_PER_SAMPLE;
-	if ((undefined === result.channels) && (undefined === result.numChannels))
-		result.channels = DEFAULT_MICROPHONE_CHANNELS;
+	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_MICROPHONE_CHANNELS))
+		trace(`StickS3 microphone forcing mono input from ${result.numChannels}\n`);
+	if ((undefined !== result.channels) && (result.channels !== DEFAULT_MICROPHONE_CHANNELS))
+		trace(`StickS3 microphone forcing mono input from ${result.channels}\n`);
+	result.channels = DEFAULT_MICROPHONE_CHANNELS;
+	delete result.numChannels;
 
 	return result;
 }
