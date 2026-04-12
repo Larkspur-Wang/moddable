@@ -4,17 +4,42 @@ import StickS3Board from "sticks3/board";
 export default class StickS3AudioIn extends AudioIn {
 	constructor(options = {}) {
 		const settings = StickS3Board.microphoneOptions(options);
-		StickS3Board.acquireMicrophone();
+		super(settings);
+		this._stickS3Closed = false;
+		this._stickS3Started = false;
+		this._stickS3Settings = settings;
+	}
 
-		let constructed = false;
+	start() {
+		if (this._stickS3Closed)
+			throw new Error("audio in closed");
+
+		if (!this._stickS3Started) {
+			StickS3Board.acquireMicrophone(this._stickS3Settings);
+			try {
+				super.start();
+				this._stickS3Started = true;
+			}
+			catch (error) {
+				StickS3Board.releaseMicrophone();
+				throw error;
+			}
+			return;
+		}
+
+		super.start();
+	}
+
+	stop() {
+		if (!this._stickS3Started)
+			return super.stop();
+
 		try {
-			super(settings);
-			constructed = true;
-			this._stickS3Closed = false;
+			super.stop();
 		}
 		finally {
-			if (!constructed)
-				StickS3Board.releaseMicrophone();
+			this._stickS3Started = false;
+			StickS3Board.releaseMicrophone();
 		}
 	}
 
@@ -27,7 +52,10 @@ export default class StickS3AudioIn extends AudioIn {
 			super.close();
 		}
 		finally {
-			StickS3Board.releaseMicrophone();
+			if (this._stickS3Started) {
+				this._stickS3Started = false;
+				StickS3Board.releaseMicrophone();
+			}
 		}
 	}
 }

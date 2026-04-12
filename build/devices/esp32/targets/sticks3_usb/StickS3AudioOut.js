@@ -7,6 +7,7 @@ export default class StickS3AudioOut extends AudioOut {
 		super(settings);
 		this._stickS3Closed = false;
 		this._stickS3Started = false;
+		this._stickS3Settings = settings;
 	}
 
 	start() {
@@ -14,7 +15,7 @@ export default class StickS3AudioOut extends AudioOut {
 			throw new Error("audio out closed");
 
 		if (!this._stickS3Started) {
-			StickS3Board.acquireSpeaker();
+			StickS3Board.acquireSpeaker(this._stickS3Settings);
 			try {
 				super.start();
 				this._stickS3Started = true;

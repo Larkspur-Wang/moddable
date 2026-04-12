@@ -1,6 +1,11 @@
 import config from "mc/config";
 import ES8311 from "es8311";
 import M5PM1 from "m5pm1";
+import {
+	DEFAULT_MICROPHONE_GAIN,
+	normalizeMicrophoneSession,
+	normalizeSpeakerSession
+} from "es8311";
 
 const DEFAULT_SPEAKER_SAMPLE_RATE = 44100;
 const DEFAULT_MICROPHONE_SAMPLE_RATE = 16000;
@@ -8,6 +13,8 @@ const DEFAULT_BITS_PER_SAMPLE = 16;
 const DEFAULT_SPEAKER_CHANNELS = 2;
 const DEFAULT_MICROPHONE_CHANNELS = 1;
 const DEFAULT_CODEC_VOLUME = 0xBF;
+const DEFAULT_SPEAKER_SETTLE_MS = 12;
+const DEFAULT_MICROPHONE_SETTLE_MS = 4;
 
 const INTERNAL_I2C = Object.freeze({
 	sda: 47,
@@ -62,7 +69,9 @@ const state = {
 	speakerUsers: 0,
 	microphoneUsers: 0,
 	mode: "idle",
-	lastError: ""
+	lastError: "",
+	speakerSession: null,
+	microphoneSession: null
 };
 
 function clampCodecVolume(value) {
@@ -71,6 +80,51 @@ function clampCodecVolume(value) {
 
 function resolveCodecVolume() {
 	return clampCodecVolume(config.es8311?.volume ?? DEFAULT_CODEC_VOLUME);
+}
+
+function resolveMicrophoneGain() {
+	return clampCodecVolume(config.es8311?.microphoneGain ?? DEFAULT_MICROPHONE_GAIN);
+}
+
+function resolveSpeakerSettleMs() {
+	const value = config.es8311?.speakerSettleMs;
+	return Number.isFinite(value) ? Math.max(1, value | 0) : DEFAULT_SPEAKER_SETTLE_MS;
+}
+
+function resolveMicrophoneSettleMs() {
+	const value = config.es8311?.microphoneSettleMs;
+	return Number.isFinite(value) ? Math.max(1, value | 0) : DEFAULT_MICROPHONE_SETTLE_MS;
+}
+
+function sameSession(a, b, keys) {
+	if (!a || !b)
+		return false;
+
+	for (let i = 0; i < keys.length; i++) {
+		const key = keys[i];
+		if (a[key] !== b[key])
+			return false;
+	}
+
+	return true;
+}
+
+function speakerSession(options = {}) {
+	return normalizeSpeakerSession({
+		sampleRate: options.sampleRate ?? DEFAULT_SPEAKER_SAMPLE_RATE,
+		bitsPerSample: options.bitsPerSample ?? DEFAULT_BITS_PER_SAMPLE,
+		volume: options.volume ?? resolveCodecVolume(),
+		settleMs: options.settleMs ?? resolveSpeakerSettleMs()
+	});
+}
+
+function microphoneSession(options = {}) {
+	return normalizeMicrophoneSession({
+		sampleRate: options.sampleRate ?? DEFAULT_MICROPHONE_SAMPLE_RATE,
+		bitsPerSample: options.bitsPerSample ?? DEFAULT_BITS_PER_SAMPLE,
+		gain: options.gain ?? resolveMicrophoneGain(),
+		settleMs: options.settleMs ?? resolveMicrophoneSettleMs()
+	});
 }
 
 function initializeState() {
@@ -114,80 +168,96 @@ function ensureInitialized() {
 }
 
 function pinsSpeakerOptions(options = {}) {
+	const session = speakerSession(options);
 	const result = {
 		...options
 	};
 
-	if (undefined === result.sampleRate)
-		result.sampleRate = DEFAULT_SPEAKER_SAMPLE_RATE;
-	if (undefined === result.bitsPerSample)
-		result.bitsPerSample = DEFAULT_BITS_PER_SAMPLE;
+	result.sampleRate = session.sampleRate;
+	result.bitsPerSample = session.bitsPerSample;
 	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_SPEAKER_CHANNELS))
 		trace(`StickS3 speaker forcing stereo pins output from ${result.numChannels}\n`);
 	if ((undefined !== result.channels) && (result.channels !== DEFAULT_SPEAKER_CHANNELS))
 		trace(`StickS3 speaker forcing stereo pins output from ${result.channels}\n`);
 	result.numChannels = DEFAULT_SPEAKER_CHANNELS;
 	delete result.channels;
+	delete result.volume;
+	delete result.settleMs;
 
 	return result;
 }
 
 function ioSpeakerOptions(options = {}) {
+	const session = speakerSession(options);
 	const result = {
 		...options
 	};
 
-	if (undefined === result.sampleRate)
-		result.sampleRate = DEFAULT_SPEAKER_SAMPLE_RATE;
-	if (undefined === result.bitsPerSample)
-		result.bitsPerSample = DEFAULT_BITS_PER_SAMPLE;
+	result.sampleRate = session.sampleRate;
+	result.bitsPerSample = session.bitsPerSample;
 	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_SPEAKER_CHANNELS))
 		trace(`StickS3 speaker forcing stereo io output from ${result.numChannels}\n`);
 	if ((undefined !== result.channels) && (result.channels !== DEFAULT_SPEAKER_CHANNELS))
 		trace(`StickS3 speaker forcing stereo io output from ${result.channels}\n`);
 	result.channels = DEFAULT_SPEAKER_CHANNELS;
 	delete result.numChannels;
+	delete result.volume;
+	delete result.settleMs;
 
 	return result;
 }
 
 function microphoneOptions(options = {}) {
+	const session = microphoneSession(options);
 	const result = {
 		...options
 	};
 
-	if (undefined === result.sampleRate)
-		result.sampleRate = DEFAULT_MICROPHONE_SAMPLE_RATE;
-	if (undefined === result.bitsPerSample)
-		result.bitsPerSample = DEFAULT_BITS_PER_SAMPLE;
+	result.sampleRate = session.sampleRate;
+	result.bitsPerSample = session.bitsPerSample;
 	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_MICROPHONE_CHANNELS))
 		trace(`StickS3 microphone forcing mono input from ${result.numChannels}\n`);
 	if ((undefined !== result.channels) && (result.channels !== DEFAULT_MICROPHONE_CHANNELS))
 		trace(`StickS3 microphone forcing mono input from ${result.channels}\n`);
 	result.channels = DEFAULT_MICROPHONE_CHANNELS;
 	delete result.numChannels;
+	delete result.gain;
+	delete result.settleMs;
 
 	return result;
 }
 
-function acquireSpeaker() {
+function acquireSpeaker(options = {}) {
 	const board = ensureInitialized();
+	const session = speakerSession(options);
 
 	if (state.microphoneUsers)
 		throw new Error("StickS3 microphone is active");
 
+	if (state.speakerUsers && !sameSession(state.speakerSession, session, ["sampleRate", "bitsPerSample", "channels", "volume"]))
+		throw new Error("StickS3 speaker is already active with a different format");
+
 	if (!state.speakerUsers) {
 		try {
 			board.power?.setSpeakerAmplifier(true);
-			board.codec?.initSpeaker(resolveCodecVolume());
+			state.speakerSession = board.codec?.startSpeaker(session) ?? session;
 			state.mode = "speaker";
+			state.lastError = "";
 		}
 		catch (error) {
+			try {
+				board.codec?.stopSpeaker();
+			}
+			catch {
+			}
 			try {
 				board.power?.setSpeakerAmplifier(false);
 			}
 			catch {
 			}
+			state.mode = "idle";
+			state.speakerSession = null;
+			state.lastError = `speaker start failed: ${error}`;
 			throw error;
 		}
 	}
@@ -205,24 +275,49 @@ function releaseSpeaker() {
 	trace(`StickS3 board release speaker users=${state.speakerUsers}\n`);
 	if (!state.speakerUsers) {
 		try {
+			state.codec?.stopSpeaker();
+		}
+		catch (error) {
+			state.lastError = `speaker stop failed: ${error}`;
+		}
+		try {
 			state.power?.setSpeakerAmplifier(false);
 		}
 		catch {
 		}
+		state.speakerSession = null;
 		state.mode = state.microphoneUsers ? "microphone" : "idle";
 	}
 }
 
-function acquireMicrophone() {
+function acquireMicrophone(options = {}) {
 	const board = ensureInitialized();
+	const session = microphoneSession(options);
 
 	if (state.speakerUsers)
 		throw new Error("StickS3 speaker is active");
 
+	if (state.microphoneUsers && !sameSession(state.microphoneSession, session, ["sampleRate", "bitsPerSample", "channels", "gain"]))
+		throw new Error("StickS3 microphone is already active with a different format");
+
 	if (!state.microphoneUsers) {
-		board.power?.setSpeakerAmplifier(false);
-		board.codec?.initMicrophone();
-		state.mode = "microphone";
+		try {
+			board.power?.setSpeakerAmplifier(false);
+			state.microphoneSession = board.codec?.startMicrophone(session) ?? session;
+			state.mode = "microphone";
+			state.lastError = "";
+		}
+		catch (error) {
+			try {
+				board.codec?.stopMicrophone();
+			}
+			catch {
+			}
+			state.mode = "idle";
+			state.microphoneSession = null;
+			state.lastError = `microphone start failed: ${error}`;
+			throw error;
+		}
 	}
 
 	state.microphoneUsers += 1;
@@ -237,7 +332,13 @@ function releaseMicrophone() {
 	state.microphoneUsers -= 1;
 	trace(`StickS3 board release microphone users=${state.microphoneUsers}\n`);
 	if (!state.microphoneUsers) {
-		state.codec?.stopMicrophone();
+		try {
+			state.codec?.stopMicrophone();
+		}
+		catch (error) {
+			state.lastError = `microphone stop failed: ${error}`;
+		}
+		state.microphoneSession = null;
 		state.mode = state.speakerUsers ? "speaker" : "idle";
 	}
 }
@@ -253,7 +354,10 @@ function snapshot() {
 		speakerUsers: state.speakerUsers,
 		microphoneUsers: state.microphoneUsers,
 		mode: state.mode,
-		lastError: state.lastError
+		lastError: state.lastError,
+		speakerSession: state.speakerSession,
+		microphoneSession: state.microphoneSession,
+		codec: state.codec?.snapshot?.() ?? null
 	};
 }
 

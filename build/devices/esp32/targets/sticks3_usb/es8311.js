@@ -1,6 +1,7 @@
 import SMBus from "pins/smbus";
+import Timer from "timer";
 
-const INTERNAL_I2C = Object.freeze({
+const DEFAULTS = Object.freeze({
 	address: 0x18,
 	sda: 47,
 	scl: 48,
@@ -8,9 +9,61 @@ const INTERNAL_I2C = Object.freeze({
 	timeout: 20
 }, true);
 
+const MODE_IDLE = "idle";
+const MODE_SPEAKER = "speaker";
+const MODE_MICROPHONE = "microphone";
+
+const DEFAULT_SPEAKER_SETTLE_MS = 12;
+const DEFAULT_MICROPHONE_SETTLE_MS = 4;
+const DEFAULT_SPEAKER_VOLUME = 0xBF;
+const DEFAULT_MICROPHONE_GAIN = 0xFF;
+const DEFAULT_SAMPLE_RATE = 16000;
+const DEFAULT_BITS_PER_SAMPLE = 16;
+
+const INTERFACE_I2S_16BIT = 0x10;
+
+const SPEAKER_ENABLE_SEQUENCE = Object.freeze([
+	0x00, 0x80,
+	0x01, 0xB5,
+	0x02, 0x18,
+	0x09, INTERFACE_I2S_16BIT,
+	0x0A, INTERFACE_I2S_16BIT,
+	0x0D, 0x01,
+	0x12, 0x00,
+	0x13, 0x10,
+	0x32, DEFAULT_SPEAKER_VOLUME,
+	0x37, 0x08
+], true);
+
+const SPEAKER_DISABLE_SEQUENCE = Object.freeze([
+	0x0D, 0xFC,
+	0x12, 0xFF,
+	0x13, 0x00,
+	0x00, 0x00
+], true);
+
+const MICROPHONE_ENABLE_SEQUENCE = Object.freeze([
+	0x00, 0x80,
+	0x01, 0xBA,
+	0x02, 0x18,
+	0x09, INTERFACE_I2S_16BIT,
+	0x0A, INTERFACE_I2S_16BIT,
+	0x0D, 0x01,
+	0x0E, 0x02,
+	0x14, 0x10,
+	0x17, DEFAULT_MICROPHONE_GAIN,
+	0x1C, 0x6A
+], true);
+
+const MICROPHONE_DISABLE_SEQUENCE = Object.freeze([
+	0x0D, 0xFC,
+	0x0E, 0x6A,
+	0x00, 0x00
+], true);
+
 function withCodec(options, callback) {
 	const codec = new SMBus({
-		...INTERNAL_I2C,
+		...DEFAULTS,
 		...options
 	});
 
@@ -27,47 +80,55 @@ function writeBulk(codec, pairs) {
 		codec.writeByte(pairs[i], pairs[i + 1]);
 }
 
-const SPEAKER_ENABLE_SEQUENCE = Object.freeze([
-	0x00, 0x80,
-	0x01, 0xB5,
-	0x02, 0x18,
-	0x0D, 0x01,
-	0x12, 0x00,
-	0x13, 0x10,
-	0x32, 0xBF,
-	0x37, 0x08
-], true);
+function clampByte(value, fallback) {
+	const numeric = Number.isFinite(value) ? value : fallback;
+	return Math.max(0, Math.min(255, numeric | 0));
+}
 
-const SPEAKER_DISABLE_SEQUENCE = Object.freeze([
-	0x0D, 0xFC,
-	0x12, 0xFF,
-	0x13, 0x00,
-	0x00, 0x00
-], true);
+function normalizeBitsPerSample(value) {
+	const bitsPerSample = Number.isFinite(value) ? (value | 0) : DEFAULT_BITS_PER_SAMPLE;
+	if (bitsPerSample !== 16)
+		throw new Error(`ES8311 only supports 16-bit PCM in the StickS3 target, got ${bitsPerSample}`);
+	return bitsPerSample;
+}
 
-const MICROPHONE_ENABLE_SEQUENCE = Object.freeze([
-	0x00, 0x80,
-	0x01, 0xBA,
-	0x02, 0x18,
-	0x0D, 0x01,
-	0x0E, 0x02,
-	0x14, 0x10,
-	0x17, 0xFF,
-	0x1C, 0x6A
-], true);
+function normalizePositiveInteger(value, fallback, label) {
+	const normalized = Number.isFinite(value) ? (value | 0) : fallback;
+	if (normalized <= 0)
+		throw new Error(`${label} must be positive`);
+	return normalized;
+}
 
-const MICROPHONE_DISABLE_SEQUENCE = Object.freeze([
-	0x0D, 0xFC,
-	0x0E, 0x6A,
-	0x00, 0x00
-], true);
+function normalizeSpeakerSession(settings = {}) {
+	return Object.freeze({
+		mode: MODE_SPEAKER,
+		sampleRate: normalizePositiveInteger(settings.sampleRate, DEFAULT_SAMPLE_RATE, "speaker sampleRate"),
+		bitsPerSample: normalizeBitsPerSample(settings.bitsPerSample),
+		channels: 2,
+		volume: clampByte(settings.volume, DEFAULT_SPEAKER_VOLUME),
+		settleMs: normalizePositiveInteger(settings.settleMs, DEFAULT_SPEAKER_SETTLE_MS, "speaker settleMs")
+	}, true);
+}
+
+function normalizeMicrophoneSession(settings = {}) {
+	return Object.freeze({
+		mode: MODE_MICROPHONE,
+		sampleRate: normalizePositiveInteger(settings.sampleRate, DEFAULT_SAMPLE_RATE, "microphone sampleRate"),
+		bitsPerSample: normalizeBitsPerSample(settings.bitsPerSample),
+		channels: 1,
+		gain: clampByte(settings.gain, DEFAULT_MICROPHONE_GAIN),
+		settleMs: normalizePositiveInteger(settings.settleMs, DEFAULT_MICROPHONE_SETTLE_MS, "microphone settleMs")
+	}, true);
+}
 
 class ES8311 {
 	constructor(options = {}) {
 		this.options = {
-			...INTERNAL_I2C,
+			...DEFAULTS,
 			...options
 		};
+		this.activeMode = MODE_IDLE;
+		this.activeSession = null;
 	}
 
 	probe() {
@@ -98,28 +159,88 @@ class ES8311 {
 		});
 	}
 
-	initSpeaker(volume = 0xBF) {
-		const clamped = Math.max(0, Math.min(255, volume | 0));
+	startSpeaker(settings = {}) {
+		const session = normalizeSpeakerSession(settings);
+
+		if ((this.activeMode === MODE_SPEAKER) && this.activeSession &&
+			(this.activeSession.sampleRate === session.sampleRate) &&
+			(this.activeSession.bitsPerSample === session.bitsPerSample) &&
+			(this.activeSession.channels === session.channels) &&
+			(this.activeSession.volume === session.volume))
+			return this.activeSession;
 
 		withCodec(this.options, codec => {
+			if (this.activeMode === MODE_MICROPHONE)
+				writeBulk(codec, MICROPHONE_DISABLE_SEQUENCE);
+
 			writeBulk(codec, SPEAKER_ENABLE_SEQUENCE);
-			codec.writeByte(0x32, clamped);
+			codec.writeByte(0x32, session.volume);
 		});
+
+		this.activeMode = MODE_SPEAKER;
+		this.activeSession = session;
+		Timer.delay(session.settleMs);
+		return session;
 	}
 
 	stopSpeaker() {
+		if (this.activeMode !== MODE_SPEAKER)
+			return;
+
 		withCodec(this.options, codec => writeBulk(codec, SPEAKER_DISABLE_SEQUENCE));
+		this.activeMode = MODE_IDLE;
+		this.activeSession = null;
 	}
 
-	initMicrophone() {
+	startMicrophone(settings = {}) {
+		const session = normalizeMicrophoneSession(settings);
+
+		if ((this.activeMode === MODE_MICROPHONE) && this.activeSession &&
+			(this.activeSession.sampleRate === session.sampleRate) &&
+			(this.activeSession.bitsPerSample === session.bitsPerSample) &&
+			(this.activeSession.channels === session.channels) &&
+			(this.activeSession.gain === session.gain))
+			return this.activeSession;
+
 		withCodec(this.options, codec => {
+			if (this.activeMode === MODE_SPEAKER)
+				writeBulk(codec, SPEAKER_DISABLE_SEQUENCE);
+
 			writeBulk(codec, MICROPHONE_ENABLE_SEQUENCE);
+			codec.writeByte(0x17, session.gain);
 		});
+
+		this.activeMode = MODE_MICROPHONE;
+		this.activeSession = session;
+		Timer.delay(session.settleMs);
+		return session;
 	}
 
 	stopMicrophone() {
+		if (this.activeMode !== MODE_MICROPHONE)
+			return;
+
 		withCodec(this.options, codec => writeBulk(codec, MICROPHONE_DISABLE_SEQUENCE));
+		this.activeMode = MODE_IDLE;
+		this.activeSession = null;
+	}
+
+	snapshot() {
+		return {
+			activeMode: this.activeMode,
+			activeSession: this.activeSession
+		};
 	}
 }
+
+export {
+	DEFAULT_MICROPHONE_GAIN,
+	DEFAULT_SPEAKER_VOLUME,
+	MODE_IDLE,
+	MODE_MICROPHONE,
+	MODE_SPEAKER,
+	normalizeMicrophoneSession,
+	normalizeSpeakerSession
+};
 
 export default ES8311;
