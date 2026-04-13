@@ -90,6 +90,7 @@ static uint8_t buffer1[128];
 
 static int8_t isUART = 0;		// 0 CDC, 1 UART
 static int8_t gProbing = 1;
+static int8_t gDebuggerAttached = 0;
 
 static const char *strstr_l(const char *src, int src_l, const char *search)
 {
@@ -131,6 +132,7 @@ static void debug_task(void *pvParameter)
 
 		if (strstr_l((char *)buffer0, buffer0_available, "<?xs#")) {
 			isUART = 0;
+			gDebuggerAttached = 1;
 			bufferReady = 0;
 			buffer0_position = 0;
 
@@ -144,6 +146,7 @@ static void debug_task(void *pvParameter)
 		}
 		if (strstr_l((char *)buffer1, buffer1_available, "<?xs#")) {
 			isUART = 1;
+			gDebuggerAttached = 1;
 			bufferReady = 1;
 			buffer1_position = 0;
 
@@ -223,7 +226,7 @@ static void debug_task(void *pvParameter)
 WEAK void modLog_transmit(const char *msg)
 {
 #ifdef mxDebug
-	if (gThe) {
+	if (gThe && gDebuggerAttached) {
 		uint8_t c;
 		while (0 != (c = c_read8(msg++)))
 			fx_putc(gThe, c);

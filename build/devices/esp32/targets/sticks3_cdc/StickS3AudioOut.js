@@ -30,7 +30,6 @@ export default class StickS3AudioOut extends AudioOut {
 	}
 
 	start() {
-		trace(`StickS3AudioOut start closed=${this._stickS3Closed} started=${this._stickS3Started} acquired=${this._stickS3Acquired}\n`);
 		if (this._stickS3Closed)
 			throw new Error("audio out closed");
 
@@ -38,18 +37,14 @@ export default class StickS3AudioOut extends AudioOut {
 			let acquired = false;
 			try {
 				if (!this._stickS3Acquired) {
-					trace("StickS3AudioOut acquiring speaker route\n");
 					StickS3Board.acquireSpeaker(this._stickS3Settings);
 					this._stickS3Acquired = true;
 					acquired = true;
-					trace("StickS3AudioOut speaker route acquired\n");
 				}
 				super.start();
 				this._stickS3Started = true;
-				trace("StickS3AudioOut native start ok\n");
 			}
 			catch (error) {
-				trace(`StickS3AudioOut start failed ${error}\n`);
 				if (acquired) {
 					StickS3Board.releaseSpeaker();
 					this._stickS3Acquired = false;
@@ -60,22 +55,18 @@ export default class StickS3AudioOut extends AudioOut {
 		}
 
 		super.start();
-		trace("StickS3AudioOut native restart ok\n");
 	}
 
 	stop() {
-		trace(`StickS3AudioOut stop started=${this._stickS3Started} acquired=${this._stickS3Acquired}\n`);
 		if (!this._stickS3Started)
 			return super.stop();
 
 		try {
 			super.stop();
-			trace("StickS3AudioOut native stop ok\n");
 		}
 		finally {
 			this._stickS3Started = false;
 			if (this._stickS3Acquired) {
-				trace("StickS3AudioOut releasing speaker route from stop\n");
 				StickS3Board.releaseSpeaker();
 				this._stickS3Acquired = false;
 			}
@@ -83,19 +74,16 @@ export default class StickS3AudioOut extends AudioOut {
 	}
 
 	close() {
-		trace(`StickS3AudioOut close closed=${this._stickS3Closed} started=${this._stickS3Started} acquired=${this._stickS3Acquired}\n`);
 		if (this._stickS3Closed)
 			return;
 
 		this._stickS3Closed = true;
 		try {
 			super.close();
-			trace("StickS3AudioOut native close ok\n");
 		}
 		finally {
 			this._stickS3Started = false;
 			if (this._stickS3Acquired) {
-				trace("StickS3AudioOut releasing speaker route from close\n");
 				StickS3Board.releaseSpeaker();
 				this._stickS3Acquired = false;
 			}

@@ -29,6 +29,7 @@
 
 #include "driver/i2s_pdm.h"
 #include "driver/i2s_std.h"
+#include "esp_log.h"
 #include "freertos/task.h"
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -122,6 +123,7 @@ static esp_err_t doWrite(AudioOut audioOut, void *buffer, xsUnsignedValue bytes)
 static void audiooutDeliver(void *theIn, void *refcon, uint8_t *message, uint16_t messageLength);
 static void xs_audioout_mark_(xsMachine* the, void* it, xsMarkRoot markRoot);
 static void audioOutLoop(void *pvParameter);
+static const char *gAudioOutTag = "audioout";
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
 	static void modAudioCalcClockDiv(uint32_t *div_a, uint32_t *div_b, uint32_t *div_n, uint32_t baseClock, uint32_t targetFreq)
@@ -235,6 +237,7 @@ static const xsHostHooks ICACHE_RODATA_ATTR xsAudioOutHooks = {
 
 static void audioOutRelease(AudioOut audioOut)
 {
+	ESP_LOGI(gAudioOutTag, "release started=%u bytesWritable=%u handle=%p task=%p", audioOut->started, (unsigned)audioOut->bytesWritable, audioOut->tx_handle, audioOut->task);
 	if (audioOut->task) {
 		xTaskNotify(audioOut->task, 2, eSetValueWithOverwrite);	// end task
 		while (audioOut->task)
@@ -242,7 +245,8 @@ static void audioOutRelease(AudioOut audioOut)
 	}
 
 	if (audioOut->tx_handle) {
-		i2s_channel_disable(audioOut->tx_handle);
+		if (audioOut->started)
+			i2s_channel_disable(audioOut->tx_handle);
 		i2s_del_channel(audioOut->tx_handle);
 		audioOut->tx_handle = NULL;
 	}
@@ -415,15 +419,17 @@ void xs_audioout_constructor_(xsMachine *the)
 #if MODDEF_AUDIOOUT_I2S_BITSPERSAMPLE == 32
 	i2s_config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
 	i2s_config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_32BIT;
+	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
 	msb_right = false;
 #elif MODDEF_AUDIOOUT_I2S_BITSPERSAMPLE == 16
 	i2s_config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
 	i2s_config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_16BIT;
+	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
 #else
 	i2s_config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_8BIT;
 	i2s_config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_8BIT;
+	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_8BIT;
 #endif
-	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
 #if SOC_I2S_HW_VERSION_1	// esp32/s2
 	i2s_config.slot_cfg.msb_right = msb_right;
 #else
@@ -474,6 +480,9 @@ void xs_audioout_constructor_(xsMachine *the)
 		xsLog("audioout: reconfig clock failed %d\n", (int)err);
 		xsUnknownError("reconfig clock failed");
 	}
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+	modAudioOutApplyRawClockDiv(audioOut->sampleRate);
+#endif
 
 #elif MODDEF_AUDIOOUT_I2S_DAC
 #else
@@ -490,6 +499,7 @@ void xs_audioout_constructor_(xsMachine *the)
 	audioOut->dma_buf_size = tx_chan_cfg.dma_frame_num * audioOut->sourceBytesPerFrame;
 	audioOut->total_dma_buf_size = audioOut->dma_buf_size * tx_chan_cfg.dma_desc_num;
 	audioOut->bytesWritable = audioOut->total_dma_buf_size;
+	ESP_LOGI(gAudioOutTag, "ctor ready rate=%u bits=%u channels=%u dma=%u onWritable=%d", audioOut->sampleRate, audioOut->bitsPerSample, audioOut->numChannels, (unsigned)audioOut->total_dma_buf_size, NULL != audioOut->onWritable);
 
 #if ESP32 && defined(MODDEF_AUDIOOUT_AMPLIFIER_POWER)
 	modGPIOInit(&audioOut->amplifierPower, C_NULL, MODDEF_AUDIOOUT_AMPLIFIER_POWER, kModGPIOOutput);
@@ -529,15 +539,21 @@ void xs_audioout_start_(xsMachine *the)
 
 	if (audioOut->started)
 		return;
+	ESP_LOGI(gAudioOutTag, "start enter handle=%p bytesWritable=%u onWritable=%d", audioOut->tx_handle, (unsigned)audioOut->bytesWritable, NULL != audioOut->onWritable);
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+	modAudioOutApplyRawClockDiv(audioOut->sampleRate);
+#endif
 	err = i2s_channel_enable(audioOut->tx_handle);
 	if (ESP_OK != err)
 		xsUnknownError("can't enable");
+	ESP_LOGI(gAudioOutTag, "start enabled");
 	xsLog("audioout: enabled\n");
 
 	audioOut->started = true;
 	
 	if (!audioOut->callbackPending /* && audioOut->onWritable */) {
+		ESP_LOGI(gAudioOutTag, "start post callback onWritable=%d", NULL != audioOut->onWritable);
 		audioOut->callbackPending = true;
 		__atomic_add_fetch(&audioOut->useCount, 1, __ATOMIC_SEQ_CST);
 		modMessagePostToMachine(audioOut->the, C_NULL, 0, audiooutDeliver, audioOut);

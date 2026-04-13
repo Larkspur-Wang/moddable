@@ -658,22 +658,34 @@ void audioInLoop(void *pvParameter)
 			}
 		}
 	};
+#if defined(I2S_CLK_SRC_PLL_160M) && !defined(CONFIG_IDF_TARGET_ESP32P4)
+	rx_std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
+#else
+	rx_std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+#endif
 #ifdef MODDEF_AUDIOIN_I2S_MCLK_MULTIPLE
 	rx_std_cfg.clk_cfg.mclk_multiple = MODDEF_AUDIOIN_I2S_MCLK_MULTIPLE;
 #endif
+	rx_std_cfg.slot_cfg.data_bit_width = (8 == input->bitsPerSample) ? I2S_DATA_BIT_WIDTH_8BIT : I2S_DATA_BIT_WIDTH_16BIT;
+	rx_std_cfg.slot_cfg.ws_width = (8 == input->bitsPerSample) ? I2S_DATA_BIT_WIDTH_8BIT : I2S_DATA_BIT_WIDTH_16BIT;
+	rx_std_cfg.slot_cfg.slot_bit_width = (8 == input->bitsPerSample) ? I2S_SLOT_BIT_WIDTH_8BIT : I2S_SLOT_BIT_WIDTH_16BIT;
+	rx_std_cfg.slot_cfg.slot_mode = (2 == MODDEF_AUDIOIN_NUMCHANNELS) ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO;
+	rx_std_cfg.slot_cfg.slot_mask = (2 == MODDEF_AUDIOIN_NUMCHANNELS)
+		? I2S_STD_SLOT_BOTH
+		: MODDEF_AUDIOIN_I2S_SLOT;
+	rx_std_cfg.slot_cfg.ws_pol = false;
 #if !SOC_I2S_HW_VERSION_1
 #ifdef MODDEF_AUDIOIN_I2S_LEFT_ALIGN
 	rx_std_cfg.slot_cfg.left_align = MODDEF_AUDIOIN_I2S_LEFT_ALIGN;
 #endif
 	rx_std_cfg.slot_cfg.big_endian = false;
 	rx_std_cfg.slot_cfg.bit_order_lsb = false;
+#else
+	rx_std_cfg.slot_cfg.msb_right = false;
 #endif
 #ifdef MODDEF_AUDIOIN_I2S_BIT_SHIFT
 	rx_std_cfg.slot_cfg.bit_shift = MODDEF_AUDIOIN_I2S_BIT_SHIFT;
 #endif
-	rx_std_cfg.slot_cfg.slot_mask = (2 == MODDEF_AUDIOIN_NUMCHANNELS)
-		? I2S_STD_SLOT_BOTH
-		: MODDEF_AUDIOIN_I2S_SLOT; 		//@@
 
 		err = i2s_channel_init_std_mode(input->handle, &rx_std_cfg);
 		if (err) {

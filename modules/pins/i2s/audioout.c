@@ -1680,15 +1680,17 @@ void audioOutLoop(void *pvParameter)
 #if MODDEF_AUDIOOUT_I2S_BITSPERSAMPLE == 32
 	i2s_config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
 	i2s_config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_32BIT;
+	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
 	msb_right = false;
 #elif MODDEF_AUDIOOUT_I2S_BITSPERSAMPLE == 16
 	i2s_config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
 	i2s_config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_16BIT;
+	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
 #else
 	i2s_config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_8BIT;
 	i2s_config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_8BIT;
+	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_8BIT;
 #endif
-	i2s_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
 #if SOC_I2S_HW_VERSION_1    // For esp32/esp32-s2
 	i2s_config.slot_cfg.msb_right = msb_right;
 #else
@@ -1710,6 +1712,9 @@ void audioOutLoop(void *pvParameter)
 	i2s_channel_init_std_mode(out->tx_handle, &i2s_config);
 	i2s_channel_reconfig_std_slot(out->tx_handle, &i2s_config.slot_cfg);
 	i2s_channel_reconfig_std_clock(out->tx_handle, &i2s_config.clk_cfg);
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+	modAudioOutApplyRawClockDiv(out->sampleRate);
+#endif
 
 #else /* MODDEF_AUDIOOUT_I2S_DAC */
 	dac_continuous_config_t cont_cfg = {
@@ -1775,12 +1780,18 @@ void audioOutLoop(void *pvParameter)
 				out->bytesInFlight = sizeof(out->buffer) * 1000;		// don't turn off amplifier during disable/enable
 				modGPIOWrite(&out->amplifierPower, 1);
 				i2s_channel_disable(out->tx_handle);
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+				modAudioOutApplyRawClockDiv(out->sampleRate);
+#endif
 				i2s_channel_enable(out->tx_handle);
 			}
 			out->bytesInFlight = out->sampleRate >> 3;		// 1/8th of a second
 #elif MODDEF_AUDIOOUT_I2S_DAC
 			dac_continuous_enable(out->dacHandle);
 #else
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(MODDEF_AUDIOOUT_I2S_BCK_PIN) && (MODDEF_AUDIOOUT_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+			modAudioOutApplyRawClockDiv(out->sampleRate);
+#endif
 			i2s_channel_enable(out->tx_handle);
 #endif
 

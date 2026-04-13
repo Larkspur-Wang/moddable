@@ -71,27 +71,6 @@ const MICROPHONE_DISABLE_SEQUENCE = Object.freeze([
 	0x00, 0x00
 ], true);
 
-function formatByte(value) {
-	return `0x${(value & 0xFF).toString(16).toUpperCase().padStart(2, "0")}`;
-}
-
-function traceCodecState(options, label) {
-	try {
-		withCodec(options, codec => {
-			const registers = [0x00, 0x01, 0x02, 0x09, 0x0A, 0x0D, 0x0E, 0x12, 0x13, 0x14, 0x16, 0x17, 0x1C, 0x32, 0x37];
-			const snapshot = {};
-			for (let i = 0; i < registers.length; i++) {
-				const register = registers[i];
-				snapshot[formatByte(register)] = formatByte(codec.readByte(register));
-			}
-			trace(`StickS3 codec ${label} ${JSON.stringify(snapshot)}\n`);
-		});
-	}
-	catch (error) {
-		trace(`StickS3 codec ${label} diagnostics failed ${error}\n`);
-	}
-}
-
 function withCodec(options, callback) {
 	const codec = new SMBus({
 		...DEFAULTS,
@@ -192,7 +171,6 @@ class ES8311 {
 	}
 
 	initialize(settings = {}) {
-		trace(`StickS3 codec initialize ${JSON.stringify(settings)}\n`);
 		withCodec(this.options, codec => {
 			codec.writeByte(0x00, 0x1F);
 			Timer.delay(DEFAULT_RESET_HOLD_MS);
@@ -202,21 +180,17 @@ class ES8311 {
 		this.activeMode = MODE_IDLE;
 		this.activeSession = null;
 		this.initialized = true;
-		traceCodecState(this.options, "after-init");
 	}
 
 	startSpeaker(settings = {}) {
 		const session = normalizeSpeakerSession(settings);
-		trace(`StickS3 codec startSpeaker request ${JSON.stringify(session)} active=${this.activeMode}\n`);
 
 		if ((this.activeMode === MODE_SPEAKER) && this.activeSession &&
 			(this.activeSession.sampleRate === session.sampleRate) &&
 			(this.activeSession.bitsPerSample === session.bitsPerSample) &&
 			(this.activeSession.channels === session.channels) &&
-			(this.activeSession.volume === session.volume)) {
-			trace("StickS3 codec startSpeaker reuse active session\n");
+			(this.activeSession.volume === session.volume))
 			return this.activeSession;
-		}
 
 		if (!this.initialized)
 			this.initialize();
@@ -232,7 +206,6 @@ class ES8311 {
 		this.activeMode = MODE_SPEAKER;
 		this.activeSession = session;
 		Timer.delay(session.settleMs);
-		traceCodecState(this.options, "after-start-speaker");
 		return session;
 	}
 
@@ -240,24 +213,19 @@ class ES8311 {
 		if (this.activeMode !== MODE_SPEAKER)
 			return;
 
-		trace("StickS3 codec stopSpeaker idle-only\n");
 		this.activeMode = MODE_IDLE;
 		this.activeSession = null;
-		traceCodecState(this.options, "after-stop-speaker");
 	}
 
 	startMicrophone(settings = {}) {
 		const session = normalizeMicrophoneSession(settings);
-		trace(`StickS3 codec startMicrophone request ${JSON.stringify(session)} active=${this.activeMode}\n`);
 
 		if ((this.activeMode === MODE_MICROPHONE) && this.activeSession &&
 			(this.activeSession.sampleRate === session.sampleRate) &&
 			(this.activeSession.bitsPerSample === session.bitsPerSample) &&
 			(this.activeSession.channels === session.channels) &&
-			(this.activeSession.gain === session.gain)) {
-			trace("StickS3 codec startMicrophone reuse active session\n");
+			(this.activeSession.gain === session.gain))
 			return this.activeSession;
-		}
 
 		if (!this.initialized)
 			this.initialize();
@@ -273,7 +241,6 @@ class ES8311 {
 		this.activeMode = MODE_MICROPHONE;
 		this.activeSession = session;
 		Timer.delay(session.settleMs);
-		traceCodecState(this.options, "after-start-microphone");
 		return session;
 	}
 
@@ -281,12 +248,10 @@ class ES8311 {
 		if (this.activeMode !== MODE_MICROPHONE)
 			return;
 
-		trace("StickS3 codec stopMicrophone\n");
 		withCodec(this.options, codec => writeBulk(codec, MICROPHONE_DISABLE_SEQUENCE));
 		this.initialized = false;
 		this.activeMode = MODE_IDLE;
 		this.activeSession = null;
-		traceCodecState(this.options, "after-stop-microphone");
 	}
 
 	snapshot() {

@@ -59,6 +59,18 @@ typedef struct {
     volatile uint32_t write;
 } fifo_t;
 
+typedef struct {
+	uint32_t lineStateCount;
+	uint32_t rxCallbackCount;
+	uint32_t rxBytes;
+	uint32_t fifoPutFailures;
+	uint32_t queueSignals;
+	uint32_t getcCount;
+	uint8_t firstBytes[8];
+	uint8_t firstByteCount;
+	uint8_t reserved[3];
+} modTinyUSBDbgSnapshotRecord;
+
 QueueHandle_t usbDbgQueue;
 static uint32_t usbEvtPending = 0;
 static fifo_t rx_fifo;
@@ -67,6 +79,41 @@ static uint8_t usb_rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE];
 #define USB_TX_PENDING_SIZE 4096
 static uint8_t usb_tx_pending[USB_TX_PENDING_SIZE];
 static uint16_t usb_tx_pending_count = 0;
+static volatile uint32_t gTinyUSBLineStateCount = 0;
+static volatile uint32_t gTinyUSBRxCallbackCount = 0;
+static volatile uint32_t gTinyUSBRxBytes = 0;
+static volatile uint32_t gTinyUSBFifoPutFailures = 0;
+static volatile uint32_t gTinyUSBQueueSignals = 0;
+static volatile uint32_t gTinyUSBGetcCount = 0;
+static uint8_t gTinyUSBFirstBytes[8];
+static volatile uint8_t gTinyUSBFirstByteCount = 0;
+
+void modTinyUSBDbgReset(void) {
+	gTinyUSBLineStateCount = 0;
+	gTinyUSBRxCallbackCount = 0;
+	gTinyUSBRxBytes = 0;
+	gTinyUSBFifoPutFailures = 0;
+	gTinyUSBQueueSignals = 0;
+	gTinyUSBGetcCount = 0;
+	gTinyUSBFirstByteCount = 0;
+}
+
+void modTinyUSBDbgSnapshot(modTinyUSBDbgSnapshotRecord *snapshot) {
+	uint8_t i;
+
+	if (!snapshot)
+		return;
+
+	snapshot->lineStateCount = gTinyUSBLineStateCount;
+	snapshot->rxCallbackCount = gTinyUSBRxCallbackCount;
+	snapshot->rxBytes = gTinyUSBRxBytes;
+	snapshot->fifoPutFailures = gTinyUSBFifoPutFailures;
+	snapshot->queueSignals = gTinyUSBQueueSignals;
+	snapshot->getcCount = gTinyUSBGetcCount;
+	snapshot->firstByteCount = gTinyUSBFirstByteCount;
+	for (i = 0; (i < snapshot->firstByteCount) && (i < sizeof(snapshot->firstBytes)); i++)
+		snapshot->firstBytes[i] = gTinyUSBFirstBytes[i];
+}
 
 static void queue_pending_output(const uint8_t *bytes, int count) {
 	if (count <= 0)
@@ -257,6 +304,7 @@ void line_state_callback(int itf, cdcacm_event_t *event) {
 	uint8_t previousSequence = gLineStateSequence;
 
 	(void)itf;
+	gTinyUSBLineStateCount += 1;
 
 	/*
 		Windows usbser often reports an initial transient line state while opening
@@ -295,14 +343,21 @@ void cdc_rx_callback(int itf, cdcacm_event_t *event) {
 	space = fifo_remain(&rx_fifo);
 	esp_err_t ret = tinyusb_cdcacm_read(itf, usb_rx_buf, space, &read);
 	if (ESP_OK == ret) {
-		for (i=0; i<read; i++)
-			fifo_put(&rx_fifo, usb_rx_buf[i]);
+		gTinyUSBRxCallbackCount += 1;
+		gTinyUSBRxBytes += read;
+		for (i=0; i<read; i++) {
+			if (gTinyUSBFirstByteCount < sizeof(gTinyUSBFirstBytes))
+				gTinyUSBFirstBytes[gTinyUSBFirstByteCount++] = usb_rx_buf[i];
+			if (0 != fifo_put(&rx_fifo, usb_rx_buf[i]))
+				gTinyUSBFifoPutFailures += 1;
+		}
 	}
 
 	i = 0;
 
 #if mxDebug
 	if (0 == usbEvtPending++) {
+		gTinyUSBQueueSignals += 1;
 		xQueueSendToBackFromISR(usbDbgQueue, &i, &xTaskWoken);
 		if (xTaskWoken == pdTRUE)
 			portYIELD_FROM_ISR();
@@ -328,8 +383,10 @@ void ESP_putc(int c) {
 int ESP_getc(void) {
 	uint8_t c;
 
-	if (0 == fifo_get(&rx_fifo, &c))
+	if (0 == fifo_get(&rx_fifo, &c)) {
+		gTinyUSBGetcCount += 1;
 		return c;
+	}
 	return -1;
 }
 

@@ -12,10 +12,6 @@ const SPEAKER_AMP_GPIO = 3;
 const CHARGE_STATUS_GPIO = 0;
 const DISPLAY_POWER_GPIO = 2;
 
-function formatByte(value) {
-	return `0x${(value & 0xFF).toString(16).toUpperCase().padStart(2, "0")}`;
-}
-
 class M5PM1 extends SMBus {
 	constructor(options = {}) {
 		super({
@@ -70,12 +66,10 @@ class M5PM1 extends SMBus {
 	}
 
 	initializeStickS3() {
-		trace("StickS3 PMIC initializeStickS3\n");
 		this.writeByte(0x09, 0x00);
 		this.enableDisplayPower(true);
 		this.#configureInputGPIO(CHARGE_STATUS_GPIO);
 		this.#initializeSpeakerAmplifierControl();
-		trace(`StickS3 PMIC init reg10=${formatByte(this.readByte(0x10))} reg11=${formatByte(this.readByte(0x11))} reg12=${formatByte(this.readByte(0x12))} reg13=${formatByte(this.readByte(0x13))} reg16=${formatByte(this.readByte(0x16))}\n`);
 	}
 
 	enableDisplayPower(enabled) {
@@ -84,13 +78,10 @@ class M5PM1 extends SMBus {
 
 	setSpeakerAmplifier(enabled) {
 		const mask = 1 << SPEAKER_AMP_GPIO;
-		const before = this.readByte(0x11);
 		if (enabled)
 			this.#bitOn(0x11, mask);
 		else
 			this.#bitOff(0x11, mask);
-		const after = this.readByte(0x11);
-		trace(`StickS3 PMIC speaker amp ${enabled ? "on" : "off"} reg11 ${formatByte(before)} -> ${formatByte(after)}\n`);
 	}
 
 	setExt5VEnabled(enabled) {

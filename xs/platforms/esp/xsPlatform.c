@@ -84,6 +84,93 @@ static void doRemoteCommand(txMachine *the, uint8_t *cmd, uint32_t cmdLen);
 	#define mxDebugMutexAllocated() (true)
 #endif
 
+#ifdef mxDebug
+typedef struct {
+	uint32_t lineStateCount;
+	uint32_t rxCallbackCount;
+	uint32_t rxBytes;
+	uint32_t fifoPutFailures;
+	uint32_t queueSignals;
+	uint32_t getcCount;
+	uint8_t firstBytes[8];
+	uint8_t firstByteCount;
+	uint8_t reserved[3];
+} modTinyUSBDbgSnapshotRecord;
+
+extern void modTinyUSBDbgReset(void) __attribute__((weak));
+extern void modTinyUSBDbgSnapshot(modTinyUSBDbgSnapshotRecord *snapshot) __attribute__((weak));
+
+static uint32_t gSerialDebugPIHits = 0;
+static uint32_t gSerialDebugTextFragments = 0;
+static uint32_t gSerialDebugBinaryFragments = 0;
+
+static void fxResetDebugDiagnostics(void)
+{
+	gSerialDebugPIHits = 0;
+	gSerialDebugTextFragments = 0;
+	gSerialDebugBinaryFragments = 0;
+	if (modTinyUSBDbgReset)
+		modTinyUSBDbgReset();
+}
+
+static void fxEmitDebugTimeoutDiagnostic(txMachine* the)
+{
+	modTinyUSBDbgSnapshotRecord snapshot;
+	char message[256];
+	char *dst = message;
+	int available = sizeof(message);
+	int i, count;
+
+	(void)the;
+	c_memset(&snapshot, 0, sizeof(snapshot));
+	if (modTinyUSBDbgSnapshot)
+		modTinyUSBDbgSnapshot(&snapshot);
+
+	count = snprintf(dst, available,
+		"# USBDBG timeout line=%lu rxcb=%lu rxbytes=%lu getc=%lu q=%lu drop=%lu pi=%lu txt=%lu bin=%lu first=",
+		(unsigned long)snapshot.lineStateCount,
+		(unsigned long)snapshot.rxCallbackCount,
+		(unsigned long)snapshot.rxBytes,
+		(unsigned long)snapshot.getcCount,
+		(unsigned long)snapshot.queueSignals,
+		(unsigned long)snapshot.fifoPutFailures,
+		(unsigned long)gSerialDebugPIHits,
+		(unsigned long)gSerialDebugTextFragments,
+		(unsigned long)gSerialDebugBinaryFragments);
+	if ((count < 0) || (count >= available))
+		return;
+	dst += count;
+	available -= count;
+
+	if (!snapshot.firstByteCount && available > 5) {
+		c_memcpy(dst, "none", 4);
+		dst += 4;
+		available -= 4;
+	}
+	else {
+		for (i = 0; (i < snapshot.firstByteCount) && (available > 3); i++) {
+			count = snprintf(dst, available, "%02X", snapshot.firstBytes[i]);
+			if ((count < 0) || (count >= available))
+				break;
+			dst += count;
+			available -= count;
+			if ((i + 1) < snapshot.firstByteCount) {
+				*dst++ = '.';
+				available -= 1;
+			}
+		}
+	}
+
+	if (available > 0)
+		*dst = 0;
+	else
+		message[sizeof(message) - 1] = 0;
+
+	ESP_put((uint8_t *)message, c_strlen(message));
+	ESP_put((uint8_t *)"\r\n", 2);
+}
+#endif
+
 void fxCreateMachinePlatform(txMachine* the)
 {
 	modMachineTaskInit(the);
@@ -430,6 +517,9 @@ void fxConnect(txMachine* the)
 		}
 
 		the->connection = kSerialConnection;
+#ifdef mxDebug
+		fxResetDebugDiagnostics();
+#endif
 
 		goto connected;
 	}
@@ -714,6 +804,7 @@ void fxReceive(txMachine* the)
 
 		while (!the->debugOffset) {
 			if (!the->debugConnectionVerified && (((int)(modMilliseconds() - start)) >= 2000)) {
+				fxEmitDebugTimeoutDiagnostic(the);
 				fxDisconnect(the);
 				break;
 			}
@@ -831,6 +922,7 @@ void fxReceiveLoop(void)
 		else if (state == 16) {
 			if (c == '>') {
 				current = (txMachine*)value;
+				gSerialDebugPIHits += 1;
 				if (binary)
 					state = 20;
 				else {
@@ -867,6 +959,10 @@ void fxReceiveLoop(void)
 				fragment->binary = 0;
 				c_memcpy(fragment->bytes, buffered, bufferedBytes);
 	enqueue:
+				if (fragment->binary)
+					gSerialDebugBinaryFragments += 1;
+				else
+					gSerialDebugTextFragments += 1;
 				if (NULL == current->debugFragments)
 					current->debugFragments = fragment;
 				else {
