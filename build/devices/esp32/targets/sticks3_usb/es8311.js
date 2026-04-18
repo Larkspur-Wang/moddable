@@ -130,6 +130,13 @@ function normalizePositiveInteger(value, fallback, label) {
 	return normalized;
 }
 
+function normalizeChannelCount(value, fallback, label) {
+	const normalized = Number.isFinite(value) ? (value | 0) : fallback;
+	if ((normalized !== 1) && (normalized !== 2))
+		throw new Error(`${label} must be 1 or 2`);
+	return normalized;
+}
+
 function normalizeSpeakerSession(settings = {}) {
 	return Object.freeze({
 		mode: MODE_SPEAKER,
@@ -146,7 +153,7 @@ function normalizeMicrophoneSession(settings = {}) {
 		mode: MODE_MICROPHONE,
 		sampleRate: normalizePositiveInteger(settings.sampleRate, DEFAULT_SAMPLE_RATE, "microphone sampleRate"),
 		bitsPerSample: normalizeBitsPerSample(settings.bitsPerSample),
-		channels: 1,
+		channels: normalizeChannelCount(settings.channels ?? settings.numChannels, 1, "microphone channels"),
 		gain: clampByte(settings.gain, DEFAULT_MICROPHONE_GAIN),
 		settleMs: normalizePositiveInteger(settings.settleMs, DEFAULT_MICROPHONE_SETTLE_MS, "microphone settleMs")
 	}, true);

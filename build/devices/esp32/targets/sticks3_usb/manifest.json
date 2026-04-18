@@ -9,14 +9,15 @@
 	},
 	"include": [
 		"$(MODDABLE)/modules/io/manifest.json",
-		"$(MODDABLE)/modules/io/audioout/manifest.json",
-		"$(MODDABLE)/modules/io/audioin/manifest.json",
 		"$(MODDABLE)/build/devices/esp32/modules/resetReason/manifest.json",
 		"$(MODDABLE)/modules/pins/smbus/manifest.json",
-		"$(MODDABLE)/modules/pins/i2s/manifest.json",
 		"$(MODDABLE)/modules/pins/digital/manifest.json"
 	],
 	"modules": {
+		"*": [
+			"$(MODULES)/pins/i2s/sbc_decoder",
+			"$(MODULES)/pins/i2s/dvi_adpcm_decode"
+		],
 		"setup/target": "./setup-target",
 		"sticks3/board": "./sticks3board",
 		"m5pm1": "./m5pm1",
@@ -81,6 +82,7 @@
 			"sampleRate": 16000,
 			"numChannels": 1,
 			"bitsPerSample": 16,
+			"bufferSize": 131072,
 			"i2s": {
 				"num": 1,
 				"slot": "I2S_STD_SLOT_RIGHT",
@@ -90,6 +92,8 @@
 				"mck_pin": 18,
 				"datain": 16,
 				"mclk_multiple": "I2S_MCLK_MULTIPLE_128",
+				"raw_clock_multiplier": 8,
+				"mono_packed": 1,
 				"left_align": 1,
 				"bit_shift": 1
 			}

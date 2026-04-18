@@ -139,6 +139,7 @@ function microphoneSession(options = {}) {
 	return normalizeMicrophoneSession({
 		sampleRate: options.sampleRate ?? DEFAULT_MICROPHONE_SAMPLE_RATE,
 		bitsPerSample: options.bitsPerSample ?? DEFAULT_BITS_PER_SAMPLE,
+		channels: options.channels ?? options.numChannels ?? DEFAULT_MICROPHONE_CHANNELS,
 		gain: options.gain ?? resolveMicrophoneGain(),
 		settleMs: options.settleMs ?? resolveMicrophoneSettleMs()
 	});
@@ -149,6 +150,7 @@ function initializeState() {
 		return;
 
 	try {
+		trace("StickS3 board init start\n");
 		const power = new M5PM1(INTERNAL_I2C);
 		state.power = power;
 		state.codec = new ES8311(INTERNAL_I2C);
@@ -157,9 +159,11 @@ function initializeState() {
 		try {
 			power.initializeStickS3();
 			state.lastError = "";
+			trace("StickS3 board power init ok\n");
 		}
 		catch (error) {
 			state.lastError = `board init skipped: ${error}`;
+			trace(`StickS3 board power init skipped ${error}\n`);
 		}
 	}
 	catch (error) {
@@ -167,6 +171,7 @@ function initializeState() {
 		state.power = null;
 		state.codec = null;
 		state.lastError = `${error}`;
+		trace(`StickS3 board init failed ${error}\n`);
 		throw error;
 	}
 
@@ -232,11 +237,11 @@ function microphoneOptions(options = {}) {
 
 	result.sampleRate = session.sampleRate;
 	result.bitsPerSample = session.bitsPerSample;
-	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_MICROPHONE_CHANNELS))
-		trace(`StickS3 microphone forcing mono input from ${result.numChannels}\n`);
-	if ((undefined !== result.channels) && (result.channels !== DEFAULT_MICROPHONE_CHANNELS))
-		trace(`StickS3 microphone forcing mono input from ${result.channels}\n`);
-	result.channels = DEFAULT_MICROPHONE_CHANNELS;
+	if ((undefined !== result.numChannels) && (result.numChannels !== session.channels))
+		trace(`StickS3 microphone forcing ${session.channels}ch input from ${result.numChannels}\n`);
+	if ((undefined !== result.channels) && (result.channels !== session.channels))
+		trace(`StickS3 microphone forcing ${session.channels}ch input from ${result.channels}\n`);
+	result.channels = session.channels;
 	delete result.numChannels;
 	delete result.gain;
 	delete result.settleMs;
@@ -247,6 +252,7 @@ function microphoneOptions(options = {}) {
 function acquireSpeaker(options = {}) {
 	const board = ensureInitialized();
 	const session = speakerSession(options);
+	trace(`StickS3 board acquire speaker request ${JSON.stringify(session)} users=${state.speakerUsers}\n`);
 
 	if (state.microphoneUsers)
 		throw new Error("StickS3 microphone is active");
@@ -256,13 +262,16 @@ function acquireSpeaker(options = {}) {
 
 	if (!state.speakerUsers) {
 		try {
+			trace("StickS3 board speaker amp enable request\n");
 			board.power?.setSpeakerAmplifier(true);
+			trace("StickS3 board codec start speaker request\n");
 			state.speakerSession = board.codec?.startSpeaker(session) ?? session;
 			state.mode = "speaker";
 			state.lastError = "";
 			traceAudioRegisters("speaker-start");
 		}
 		catch (error) {
+			trace(`StickS3 board speaker acquire failed ${error}\n`);
 			try {
 				board.codec?.stopSpeaker();
 			}
@@ -293,12 +302,14 @@ function releaseSpeaker() {
 	trace(`StickS3 board release speaker users=${state.speakerUsers}\n`);
 	if (!state.speakerUsers) {
 		try {
+			trace("StickS3 board speaker amp disable request\n");
 			state.power?.setSpeakerAmplifier(false);
 		}
 		catch (error) {
 			state.lastError = `speaker amp disable failed: ${error}`;
 		}
 		try {
+			trace("StickS3 board codec stop speaker request\n");
 			state.codec?.stopSpeaker();
 		}
 		catch (error) {
@@ -312,6 +323,7 @@ function releaseSpeaker() {
 function acquireMicrophone(options = {}) {
 	const board = ensureInitialized();
 	const session = microphoneSession(options);
+	trace(`StickS3 board acquire microphone request ${JSON.stringify(session)} users=${state.microphoneUsers}\n`);
 
 	if (state.speakerUsers)
 		throw new Error("StickS3 speaker is active");
@@ -321,13 +333,16 @@ function acquireMicrophone(options = {}) {
 
 	if (!state.microphoneUsers) {
 		try {
+			trace("StickS3 board speaker amp disable for microphone\n");
 			board.power?.setSpeakerAmplifier(false);
+			trace("StickS3 board codec start microphone request\n");
 			state.microphoneSession = board.codec?.startMicrophone(session) ?? session;
 			state.mode = "microphone";
 			state.lastError = "";
 			traceAudioRegisters("microphone-start");
 		}
 		catch (error) {
+			trace(`StickS3 board microphone acquire failed ${error}\n`);
 			try {
 				board.codec?.stopMicrophone();
 			}
@@ -353,6 +368,7 @@ function releaseMicrophone() {
 	trace(`StickS3 board release microphone users=${state.microphoneUsers}\n`);
 	if (!state.microphoneUsers) {
 		try {
+			trace("StickS3 board codec stop microphone request\n");
 			state.codec?.stopMicrophone();
 		}
 		catch (error) {

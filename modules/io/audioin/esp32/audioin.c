@@ -32,8 +32,10 @@
 
 #include <limits.h>
 #include <math.h>
+#include <stdio.h>
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
+	#include "esp_timer.h"
 	#include "hal/i2s_ll.h"
 #endif
 
@@ -69,8 +71,17 @@
 #ifndef MODDEF_AUDIOIN_I2S_SLOT
 	#define MODDEF_AUDIOIN_I2S_SLOT (I2S_STD_SLOT_RIGHT)
 #endif
+#ifndef MODDEF_AUDIOIN_I2S_RAW_CLOCK_MULTIPLIER
+	#define MODDEF_AUDIOIN_I2S_RAW_CLOCK_MULTIPLIER (1)
+#endif
+#ifndef MODDEF_AUDIOIN_I2S_MONO_PACKED
+	#define MODDEF_AUDIOIN_I2S_MONO_PACKED (0)
+#endif
 #ifndef MODDEF_AUDIOIN_NUMCHANNELS
 	#define MODDEF_AUDIOIN_NUMCHANNELS (1)
+#endif
+#ifndef MODDEF_AUDIOIN_BUFFERSIZE
+	#define MODDEF_AUDIOIN_BUFFERSIZE (8192 * 2)
 #endif
 
 #if MODDEF_AUDIOIN_I2S_ADC
@@ -94,7 +105,10 @@
 
 #define AUDIO_IN_TIMEOUT	50
 #define MAX_INPUT_BLOCK		2048
-#define AUDIO_IN_BUFFERSIZE	(8192 * 2)
+#define AUDIO_IN_BUFFERSIZE	MODDEF_AUDIOIN_BUFFERSIZE
+#define AUDIO_IN_WARMUP_READS	2
+#define AUDIO_IN_DIAG_READS	16
+#define AUDIO_IN_DIAG_ENABLED 0
 
 enum {
 	kStateIdle = 0,
@@ -243,6 +257,16 @@ static void deliverCallbacks(void *the, void *refcon, uint8_t *message, uint16_t
 
 		dev->rx_conf.rx_update = 1;
 		dev->rx_conf.rx_update = 0;
+#endif
+
+#if AUDIO_IN_DIAG_ENABLED
+		{
+			char debugStr[160];
+			snprintf(debugStr, sizeof(debugStr), "audioin rawclk rate=%lu n=%lu a=%lu b=%lu x=%d y=%d yn1=%d m=%lu",
+				(unsigned long)sampleRate, (unsigned long)div_n, (unsigned long)div_a, (unsigned long)div_b,
+				div_x, div_y, yn1 ? 1 : 0, (unsigned long)div_m);
+			modLog_transmit(debugStr);
+		}
 #endif
 	}
 #endif
@@ -449,8 +473,11 @@ void xs_audioin_read(xsMachine *the)
 	available = amtReadable(input);
 	xSemaphoreGive(input->mutex);
 
-	if (input->numChannels == 1)
+	if (input->numChannels == 1) {
+#if !MODDEF_AUDIOIN_I2S_MONO_PACKED
 		available /= 2;					// strip left channel
+#endif
+	}
 
 	if (0 == available)
 		return;		// read returns undefined if nothing available
@@ -492,9 +519,15 @@ void xs_audioin_read(xsMachine *the)
 				remaining -= 4;
 			}
 			else {
+#if MODDEF_AUDIOIN_I2S_MONO_PACKED
+				*samples = *((uint16_t*)input->playPos);
+				bias += *samples++;
+				input->playPos += 2;
+#else
 				*samples = (*(uint32_t*)input->playPos) & 0xffff;		// take the bottom 16 bits
 				bias += *samples++;
 				input->playPos += 4;
+#endif
 				remaining -= 2;
 			}
 		}
@@ -515,9 +548,15 @@ void xs_audioin_read(xsMachine *the)
 				remaining -= 4;
 			}
 			else {
+#if MODDEF_AUDIOIN_I2S_MONO_PACKED
+				*samples = *((uint16_t*)input->playPos);
+				bias += *samples++;
+				input->playPos += 2;
+#else
 				*samples = (*(uint32_t*)input->playPos) & 0xffff;		// take the bottom 16 bits
 				bias += *samples++;
 				input->playPos += 4;
+#endif
 				remaining -= 2;
 			}
 		}
@@ -559,8 +598,11 @@ void deliverCallbacks(void *the, void *refcon, uint8_t *message, uint16_t messag
 	xsBeginHost(input->the);
 
 	bytes_read = amtReadable(input);
-	if (input->numChannels == 1)		// only lower 16 bits
+	if (input->numChannels == 1) {		// only lower 16 bits
+#if !MODDEF_AUDIOIN_I2S_MONO_PACKED
 		bytes_read /= 2;
+#endif
+	}
 
 	if (0 != bytes_read) {
 		xsResult = xsAccess(input->object);
@@ -576,6 +618,11 @@ void audioInLoop(void *pvParameter)
 {
 	AudioInput input = pvParameter;
 	uint8_t stopped = true, enabled = false;
+#if AUDIO_IN_DIAG_ENABLED
+	int audioInDiagReads = 0;
+	int64_t audioInDiagStart = 0;
+	int64_t audioInDiagLast = 0;
+#endif
 
 // ### HW CONFIGURATION
 #if MODDEF_AUDIOIN_I2S_ADC
@@ -666,6 +713,12 @@ void audioInLoop(void *pvParameter)
 #ifdef MODDEF_AUDIOIN_I2S_MCLK_MULTIPLE
 	rx_std_cfg.clk_cfg.mclk_multiple = MODDEF_AUDIOIN_I2S_MCLK_MULTIPLE;
 #endif
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && (MODDEF_AUDIOIN_I2S_MCK_PIN != I2S_GPIO_UNUSED)
+	// M5Unified initializes S3 codec mics with this dummy clock before
+	// applying the raw RX divider below.
+	rx_std_cfg.clk_cfg.sample_rate_hz = 48000;
+	rx_std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_128;
+#endif
 	rx_std_cfg.slot_cfg.data_bit_width = (8 == input->bitsPerSample) ? I2S_DATA_BIT_WIDTH_8BIT : I2S_DATA_BIT_WIDTH_16BIT;
 	rx_std_cfg.slot_cfg.ws_width = (8 == input->bitsPerSample) ? I2S_DATA_BIT_WIDTH_8BIT : I2S_DATA_BIT_WIDTH_16BIT;
 	rx_std_cfg.slot_cfg.slot_bit_width = (8 == input->bitsPerSample) ? I2S_SLOT_BIT_WIDTH_8BIT : I2S_SLOT_BIT_WIDTH_16BIT;
@@ -694,7 +747,7 @@ void audioInLoop(void *pvParameter)
 		}
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && (MODDEF_AUDIOIN_I2S_MCK_PIN != I2S_GPIO_UNUSED)
 		else
-			modAudioInApplyRawClockDiv(input->sampleRate);
+			modAudioInApplyRawClockDiv(input->sampleRate * MODDEF_AUDIOIN_I2S_RAW_CLOCK_MULTIPLIER);
 #endif
 #endif
 
@@ -711,7 +764,7 @@ void audioInLoop(void *pvParameter)
 		goto done;
 
 	while (true) {
-		size_t bytes_read;
+		size_t bytes_read = 0;
 
 		if (kStateRecording != input->state) {
 			uint32_t newState;
@@ -745,6 +798,36 @@ void audioInLoop(void *pvParameter)
 			enabled = true;
 #endif
 
+			// Discard the first couple of RX blocks after enabling to match the
+			// StickS3/M5 warmup behavior and avoid exporting startup silence.
+#if !MODDEF_AUDIOIN_I2S_ADC
+			{
+				uint8_t warmup[MAX_INPUT_BLOCK];
+				size_t warmupBytes = 0;
+				size_t warmupTotal = 0;
+				for (int warmupRead = 0; warmupRead < AUDIO_IN_WARMUP_READS; warmupRead++) {
+					err = i2s_channel_read(input->handle, warmup, sizeof(warmup), &warmupBytes, AUDIO_IN_TIMEOUT);
+					warmupTotal += warmupBytes;
+					if (err)
+						break;
+				}
+#if AUDIO_IN_DIAG_ENABLED
+				{
+					char debugStr[128];
+					snprintf(debugStr, sizeof(debugStr), "audioin warmup reads=%d bytes=%lu err=%d",
+						AUDIO_IN_WARMUP_READS, (unsigned long)warmupTotal, err);
+					modLog_transmit(debugStr);
+				}
+#endif
+			}
+#endif
+#if AUDIO_IN_DIAG_ENABLED
+			audioInDiagReads = 0;
+			audioInDiagStart = audioInDiagLast = esp_timer_get_time();
+#endif
+			xSemaphoreTake(input->mutex, portMAX_DELAY);
+			input->playPos = input->recPos = input->buffer;
+			xSemaphoreGive(input->mutex);
 			stopped = false;
 		}
 
@@ -797,14 +880,22 @@ void audioInLoop(void *pvParameter)
 #else
 		xSemaphoreTake(input->mutex, portMAX_DELAY);
 		uint32_t	amt;
-		if (input->playPos > input->recPos)
+		if (input->playPos > input->recPos) {
 			amt = input->playPos - input->recPos;
+			amt = (amt > 4) ? (amt - 4) : 0;
+		}
 		else
 			amt = input->endPos - input->recPos;
 		if (amt == 0) {
-			amt = input->playPos - input->buffer;
 			input->recPos = input->buffer;
+			amt = (input->playPos > input->buffer) ? (input->playPos - input->buffer) : 0;
+			amt = (amt > 4) ? (amt - 4) : 0;
 		}
+#if MODDEF_AUDIOIN_I2S_MONO_PACKED && (1 == MODDEF_AUDIOIN_NUMCHANNELS)
+		amt &= ~1;
+#else
+		amt &= ~3;
+#endif
 		xSemaphoreGive(input->mutex);
 		amt = (amt > MAX_INPUT_BLOCK) ? MAX_INPUT_BLOCK : amt;
 		if (amt > 0) {
@@ -814,6 +905,22 @@ void audioInLoop(void *pvParameter)
 				input->recPos += bytes_read;
 				xSemaphoreGive(input->mutex);
 			}
+#if AUDIO_IN_DIAG_ENABLED
+			if (audioInDiagReads < AUDIO_IN_DIAG_READS) {
+				int64_t now = esp_timer_get_time();
+				char debugStr[160];
+				snprintf(debugStr, sizeof(debugStr), "audioin read #%d t=%ld dt=%ld req=%lu got=%lu err=%d",
+					audioInDiagReads,
+					(long)((now - audioInDiagStart) / 1000),
+					(long)((now - audioInDiagLast) / 1000),
+					(unsigned long)amt,
+					(unsigned long)bytes_read,
+					err);
+				modLog_transmit(debugStr);
+				audioInDiagLast = now;
+				audioInDiagReads++;
+			}
+#endif
 		}
 #endif
 

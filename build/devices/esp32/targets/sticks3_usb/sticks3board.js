@@ -139,6 +139,7 @@ function microphoneSession(options = {}) {
 	return normalizeMicrophoneSession({
 		sampleRate: options.sampleRate ?? DEFAULT_MICROPHONE_SAMPLE_RATE,
 		bitsPerSample: options.bitsPerSample ?? DEFAULT_BITS_PER_SAMPLE,
+		channels: options.channels ?? options.numChannels ?? DEFAULT_MICROPHONE_CHANNELS,
 		gain: options.gain ?? resolveMicrophoneGain(),
 		settleMs: options.settleMs ?? resolveMicrophoneSettleMs()
 	});
@@ -236,11 +237,11 @@ function microphoneOptions(options = {}) {
 
 	result.sampleRate = session.sampleRate;
 	result.bitsPerSample = session.bitsPerSample;
-	if ((undefined !== result.numChannels) && (result.numChannels !== DEFAULT_MICROPHONE_CHANNELS))
-		trace(`StickS3 microphone forcing mono input from ${result.numChannels}\n`);
-	if ((undefined !== result.channels) && (result.channels !== DEFAULT_MICROPHONE_CHANNELS))
-		trace(`StickS3 microphone forcing mono input from ${result.channels}\n`);
-	result.channels = DEFAULT_MICROPHONE_CHANNELS;
+	if ((undefined !== result.numChannels) && (result.numChannels !== session.channels))
+		trace(`StickS3 microphone forcing ${session.channels}ch input from ${result.numChannels}\n`);
+	if ((undefined !== result.channels) && (result.channels !== session.channels))
+		trace(`StickS3 microphone forcing ${session.channels}ch input from ${result.channels}\n`);
+	result.channels = session.channels;
 	delete result.numChannels;
 	delete result.gain;
 	delete result.settleMs;
