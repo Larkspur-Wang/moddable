@@ -68,6 +68,9 @@
 #ifndef MODDEF_AUDIOIN_I2S_BIAS
 	#define MODDEF_AUDIOIN_I2S_BIAS			(0)
 #endif
+#ifndef MODDEF_AUDIOIN_I2S_NOISE_FILTER
+	#define MODDEF_AUDIOIN_I2S_NOISE_FILTER	(0)
+#endif
 #ifndef MODDEF_AUDIOIN_I2S_SLOT
 	#define MODDEF_AUDIOIN_I2S_SLOT (I2S_STD_SLOT_RIGHT)
 #endif
@@ -141,6 +144,7 @@ struct AudioInputRecord {
 	uint8_t		*playPos;
 	uint8_t		*endPos;
 	uint32_t	bufferSize;
+	int32_t		noiseFilter[2];
 	uint8_t		buffer[];
 };
 typedef struct AudioInputRecord AudioInputRecord;
@@ -568,7 +572,7 @@ void xs_audioin_read(xsMachine *the)
 	requested /= 2;		// samples
 	bias /= requested;
 
-#if (1 != MODDEF_AUDIOIN_I2S_MULTIPLIER) || MODDEF_AUDIOIN_I2S_BIAS
+#if (1 != MODDEF_AUDIOIN_I2S_MULTIPLIER) || MODDEF_AUDIOIN_I2S_BIAS || MODDEF_AUDIOIN_I2S_NOISE_FILTER
 	for (i=0; i<requested; i++) {
 #if MODDEF_AUDIOIN_I2S_BIAS
 		int32_t sample = samples[i] - bias;
@@ -576,6 +580,14 @@ void xs_audioin_read(xsMachine *the)
 		int32_t sample = samples[i];
 #endif
 		sample *= MODDEF_AUDIOIN_I2S_MULTIPLIER;
+#if MODDEF_AUDIOIN_I2S_NOISE_FILTER
+		{
+			const int channelIndex = (input->numChannels > 1) ? (i % input->numChannels) : 0;
+			const int32_t filtered = ((sample * (256 - MODDEF_AUDIOIN_I2S_NOISE_FILTER)) + (input->noiseFilter[channelIndex] * MODDEF_AUDIOIN_I2S_NOISE_FILTER) + 128) >> 8;
+			input->noiseFilter[channelIndex] = filtered;
+			sample = filtered;
+		}
+#endif
 		if (sample > 32767) 		// clip
 			sample = 32767;
 		else if (sample < -32768)

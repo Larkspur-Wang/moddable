@@ -92,7 +92,9 @@
 				"mck_pin": 18,
 				"datain": 16,
 				"mclk_multiple": "I2S_MCLK_MULTIPLE_128",
-				"raw_clock_multiplier": 8,
+				"bias": 1,
+				"multiplier": 8,
+				"noise_filter": 48,
 				"mono_packed": 1,
 				"left_align": 1,
 				"bit_shift": 1
